@@ -11,6 +11,8 @@ links:
   - "[[plan]]"
 ---
 
+# Habitica Full Sync Plugin for Obsidian
+
 - [Habitica Full Sync Plugin for Obsidian](#habitica-full-sync-plugin-for-obsidian)
   - [Features](#features)
   - [Installation](#installation)
@@ -26,8 +28,6 @@ links:
   - [Security](#security)
   - [Changelog](#changelog)
   - [License](#license)
-
-# Habitica Full Sync Plugin for Obsidian
 
 Sync your Habitica tasks with your Obsidian vault. This plugin pulls your personal and group tasks from Habitica, formats them in Markdown for review and tracking, and scores completed vault tasks back to Habitica automatically.
 
