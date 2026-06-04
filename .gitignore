@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build artifacts and caches
+.npm/
+.eslintcache
+*.tsbuildinfo
+tests/dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Obsidian-specific
+data.json
+.obsidian/
+hot-reload.json
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
