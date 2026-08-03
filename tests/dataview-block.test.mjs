@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDataviewBlock } from './dist/helpers.mjs';
+import { buildDataviewBlock } from './dist/barrel.mjs';
 
 const SOURCE = 'Habitica/habitica-fullsync';
 

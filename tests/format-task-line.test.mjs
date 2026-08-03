@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatTaskLine } from './dist/helpers.mjs';
+import { formatTaskLine } from './dist/barrel.mjs';
 
 const tagLookup = { t1: 'data engineering', t2: 'focus' };
 const TODAY = '2026-05-29';
@@ -52,6 +52,22 @@ test('renders checklist items as nested checkboxes with correct state', () => {
   const out = formatTaskLine(task, tagLookup, TODAY);
   assert.ok(out.includes('  - [x] step a'));
   assert.ok(out.includes('  - [ ] step b'));
+});
+
+test('preserves multi-line checklist item text with indented continuation', () => {
+  const task = {
+    id: 'c2', type: 'todo', text: 'Task', completed: false, priority: 1, tags: [],
+    checklist: [
+      { text: 'First line\n\nContinuation paragraph\n\n## heading\n\n- bullet\n    - nested', completed: false },
+    ],
+  };
+  const out = formatTaskLine(task, tagLookup, TODAY);
+  const lines = out.split('\n');
+  assert.ok(lines.some(l => l === '  - [ ] First line'), 'first line rendered as checkbox');
+  assert.ok(lines.some(l => l === '    Continuation paragraph'), 'continuation indented 4 spaces');
+  assert.ok(lines.some(l => l === '    ## heading'), 'heading preserved');
+  assert.ok(lines.some(l => l === '    - bullet'), 'bullet preserved');
+  assert.ok(lines.some(l => l === '        - nested'), 'nested bullet preserved (6 spaces)');
 });
 
 test('does not crash when tags/checklist are absent (reward task)', () => {

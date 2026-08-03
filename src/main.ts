@@ -1,41 +1,37 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-import { HabiticaApiClient } from './api-client';
-import { isMobilePlatform } from './helpers';
-import { SyncManager } from './sync-manager';
+import { Notice, Plugin } from 'obsidian';
+import { HabiticaApiClient } from './api/api-client';
+import { isMobilePlatform, shouldAutoSync } from './lib/platform';
+import { DEFAULT_SETTINGS, HabiticaSyncSettingTab } from './settings';
+import { SyncManager } from './sync/sync-manager';
 import { PluginSettings } from './types';
-import { VaultHandler } from './vault-handler';
+import { VaultHandler } from './vault/vault-handler';
 
 /**
  * Main Obsidian plugin class for Habitica Full Sync.
  *
- * Initialises the API client, vault handler, and sync manager on load.
- * Registers the "Sync Habitica Tasks" command palette command.
- * Adds the settings tab to Obsidian's settings UI.
- * Conditionally starts an auto-sync interval based on user preferences and detected platform.
+ * Responsibilities (SRP — orchestration only):
+ * 1. Load/save settings (delegates defaults to {@link DEFAULT_SETTINGS}).
+ * 2. Wire up API client, vault handler, and sync manager.
+ * 3. Register the command-palette command and settings tab.
+ * 4. Start/stop the auto-sync interval.
+ *
+ * Settings UI lives in {@link HabiticaSyncSettingTab} (`./settings.ts`). Domain helpers live in `./platform.ts`, `./tags.ts`, `./scanner.ts`, `./dataview.ts`, `./formatter.ts`, `./parser.ts`.
  */
 class HabiticaSyncFullPlugin extends Plugin {
+  // Definite assignment (`!`) is safe here — all four fields are initialised in onload() before any method touches them. A factory function would be more idiomatic but adds indirection for no behavioural gain.
   settings!: PluginSettings;
   private apiClient!: HabiticaApiClient;
   private vaultHandler!: VaultHandler;
   private syncManager!: SyncManager;
   /** Handle returned by `setInterval` for the auto-sync timer. `undefined` when auto-sync is off. */
   private autoSyncInterval?: number;
+  private statusBarItem!: HTMLElement;
 
-  /**
-   * Lifecycle hook called when Obsidian loads the plugin.
-   *
-   * Performs in order:
-   * 1. Loads persisted settings.
-   * 2. Instantiates `HabiticaApiClient`, `VaultHandler`, and `SyncManager`.
-   * 3. Registers the `sync-habitica` command in the command palette.
-   * 4. Adds the settings tab.
-   * 5. If `autoSync` is enabled and the current platform matches `autoSyncPlatform`,
-   *    runs an immediate sync and starts the repeat interval.
-   */
   async onload(): Promise<void> {
     await this.loadSettings();
 
-    this.apiClient = new HabiticaApiClient(this.settings.apiUser, this.settings.apiToken);
+    const apiToken = await this._resolveApiToken();
+    this.apiClient = new HabiticaApiClient(this.settings.apiUser, apiToken);
     this.vaultHandler = new VaultHandler(this.app);
     this.syncManager = new SyncManager(
       this.apiClient,
@@ -46,218 +42,107 @@ class HabiticaSyncFullPlugin extends Plugin {
 
     this.addCommand({
       id: 'sync-habitica',
-      name: 'Sync Habitica Tasks',
-      callback: () => this.syncHabitica()
+      name: 'Sync Habitica tasks',
+      callback: () => this.syncHabitica(true)
     });
 
     this.addSettingTab(new HabiticaSyncSettingTab(this.app, this));
+    this.addRibbonIcon('refresh-cw', 'Sync Habitica tasks', () => this.syncHabitica(true));
+    this.statusBarItem = this.addStatusBarItem();
+    this.statusBarItem.setText('🔄 Ready');
+    this.app.workspace.onLayoutReady(() => this._scheduleAutoSync());
 
-    const platformSetting = this.settings.autoSyncPlatform || 'both';
-    const isMobile = isMobilePlatform();
-
-    let shouldAutoSync = false;
-    if (platformSetting === 'both') shouldAutoSync = true;
-    else if (platformSetting === 'desktop' && !isMobile) shouldAutoSync = true;
-    else if (platformSetting === 'mobile' && isMobile) shouldAutoSync = true;
-
-    if (this.settings.autoSync && shouldAutoSync) {
-      this.syncHabitica();
-      const intervalMs = this.settings.syncInterval * 60 * 1000;
-      this.autoSyncInterval = window.setInterval(() => this.syncHabitica(), intervalMs);
-    }
+    // O6: incremental vault scanning — track changed files between syncs
+    this.registerEvent(
+      this.app.metadataCache.on('changed', (file) => {
+        this.vaultHandler.onFileChanged(file);
+      })
+    );
   }
 
-  /**
-   * Lifecycle hook called when the plugin is disabled or Obsidian shuts down.
-   * Clears the auto-sync interval to prevent memory leaks and stale callbacks.
-   */
-  onunload(): void {
+  onunload(): void {}
+
+  /** Starts or restarts the auto-sync interval based on current settings. */
+  private _scheduleAutoSync(): void {
     if (this.autoSyncInterval) {
-      clearInterval(this.autoSyncInterval);
+      window.clearInterval(this.autoSyncInterval);
+      this.autoSyncInterval = undefined;
+    }
+    const platformSetting = this.settings.autoSyncPlatform || 'both';
+    if (this.settings.autoSync && shouldAutoSync(platformSetting, isMobilePlatform())) {
+      this.autoSyncInterval = window.setInterval(
+        () => { void this.syncHabitica(); },
+        this.settings.syncInterval * 60 * 1000,
+      );
+      this.registerInterval(this.autoSyncInterval);
     }
   }
 
   /**
-   * Loads plugin settings from Obsidian's data store, merging with defaults.
-   *
-   * Uses `Object.assign` so stored values override defaults while unknown stored keys
-   * (e.g. a removed `machineId` from a previous version's `data.json`) are silently ignored.
+   * Loads settings from Obsidian's data store, merging stored values over {@link DEFAULT_SETTINGS}.
    */
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({
-      apiUser: '',
-      apiToken: '',
-      groupId: '',
-      outputFolder: '',
-      autoSync: false,
-      autoSyncPlatform: 'both',
-      syncInterval: 30,
-      disableScoring: false,
-      disableCreating: false
-    }, await this.loadData());
+    const stored = await this.loadData() as Partial<PluginSettings> | undefined;
+    this.settings = { ...DEFAULT_SETTINGS, ...stored };
+  }
+
+  /** Resolves the actual API token from SecretStorage. Awaiting handles both sync and async {@link SecretStorage} implementations — no-op on a string, correct on a Promise. */
+  private async _resolveApiToken(): Promise<string> {
+    const name = this.settings.apiTokenSecretName;
+    if (!name) {
+      new Notice('Habitica Full Sync: API token not configured. Set a secret name in plugin settings.');
+      return '';
+    }
+    const token = (await this.app.secretStorage.getSecret(name)) ?? '';
+    if (!token) {
+      new Notice('Habitica Full Sync: Could not read API token from SecretStorage. Re-enter it in plugin settings.');
+    }
+    return token;
   }
 
   /**
-   * Persists the current settings to Obsidian's data store and rebuilds the API client
-   * so credential changes (API User / API Token) take effect immediately without
-   * requiring a plugin reload.
-   * Called after every settings change in {@link HabiticaSyncSettingTab}.
+   * Persists settings and conditionally rebuilds the API client. The API client + SyncManager are only reconstructed when credentials actually change.
    */
   async saveSettings(): Promise<void> {
+    const oldUser = this.apiClient?.userId;
+    const oldToken = this.apiClient?.apiToken;
+
     await this.saveData(this.settings);
-    this.apiClient = new HabiticaApiClient(this.settings.apiUser, this.settings.apiToken);
-    this.syncManager = new SyncManager(
-      this.apiClient,
-      this.vaultHandler,
-      this.settings,
-      msg => new Notice(msg)
-    );
+
+    // Rebuild API client + SyncManager only when credentials change.
+    // The old SyncManager may still have a sync in flight — it will complete
+    // using the old API client (still valid) and be garbage-collected afterwards.
+    const newToken = await this._resolveApiToken();
+    if (this.settings.apiUser !== oldUser || newToken !== oldToken) {
+      this.apiClient = new HabiticaApiClient(this.settings.apiUser, newToken);
+      this.syncManager = new SyncManager(
+        this.apiClient,
+        this.vaultHandler,
+        this.settings,
+        msg => new Notice(msg)
+      );
+    }
+    this._scheduleAutoSync();
   }
 
   /**
    * Triggers a full Habitica ↔ Obsidian sync.
-   * Delegates to `SyncManager.sync()`, which handles concurrency guarding and error reporting.
+   * @param allowUpdates When `true`, task field edits in the markdown are pushed to Habitica. Defaults to `false` (auto-sync never mutates task metadata).
    */
-  async syncHabitica(): Promise<void> {
-    await this.syncManager.sync();
-  }
-}
-
-/**
- * Obsidian settings tab for the Habitica Full Sync plugin.
- *
- * Renders all configurable options using the Obsidian `Setting` API.
- * Notable: the API Token field sets `text.inputEl.type = 'password'` to mask the input,
- * preventing casual shoulder-surfing without affecting the stored value.
- */
-class HabiticaSyncSettingTab extends PluginSettingTab {
-  plugin: HabiticaSyncFullPlugin;
-
-  /**
-   * @param app    The Obsidian application instance.
-   * @param plugin The parent plugin instance, providing access to settings and save methods.
-   */
-  constructor(app: App, plugin: HabiticaSyncFullPlugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
-
-  /**
-   * Renders all settings controls into the settings container.
-   * Settings (in order): API User, API Token (password-masked), Group ID, Output Folder,
-   * Automatic Sync toggle, Auto Sync Platform dropdown, Sync Interval, Disable Scoring,
-   * Disable Creating New Tasks.
-   */
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-
-    new Setting(containerEl)
-      .setName('API User')
-      .setDesc('Your Habitica API User ID')
-      .addText(text => text
-        .setPlaceholder('Enter API User')
-        .setValue(this.plugin.settings.apiUser)
-        .onChange(async (value) => {
-          this.plugin.settings.apiUser = value;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName('API Token')
-      .setDesc('Your Habitica API Token (kept in Obsidian local storage; do not share your vault)')
-      .addText(text => {
-        text
-          .setPlaceholder('Enter API Token')
-          .setValue(this.plugin.settings.apiToken)
-          .onChange(async (value) => {
-            this.plugin.settings.apiToken = value;
-            await this.plugin.saveSettings();
-          });
-        text.inputEl.type = 'password';
-        return text;
-      });
-
-    new Setting(containerEl)
-      .setName('Group ID')
-      .setDesc('Your Habitica Group ID for shared tasks')
-      .addText(text => text
-        .setPlaceholder('Enter Group ID')
-        .setValue(this.plugin.settings.groupId)
-        .onChange(async (value) => {
-          this.plugin.settings.groupId = value;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName('Output folder')
-      .setDesc('Folder where habitica-fullsync.md will be saved (leave blank for vault root)')
-      .addText(text => text
-        .setPlaceholder('e.g., Habitica')
-        .setValue(this.plugin.settings.outputFolder)
-        .onChange(async (value) => {
-          this.plugin.settings.outputFolder = value;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName('Automatic sync')
-      .setDesc('Enable automatic sync on load and every X minutes')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.autoSync)
-        .onChange(async (value) => {
-          this.plugin.settings.autoSync = value;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName('Auto sync platform')
-      .setDesc('Choose which devices should run auto sync')
-      .addDropdown(dropdown => {
-        dropdown
-          .addOption('both', 'Both Desktop and Mobile')
-          .addOption('desktop', 'Desktop Only')
-          .addOption('mobile', 'Mobile Only')
-          .setValue(this.plugin.settings.autoSyncPlatform || 'both')
-          .onChange(async (value: 'both' | 'desktop' | 'mobile') => {
-            this.plugin.settings.autoSyncPlatform = value;
-            await this.plugin.saveSettings();
-          });
-      });
-
-    new Setting(containerEl)
-      .setName('Sync interval (minutes)')
-      .setDesc('How often to run auto-sync when enabled')
-      .addText(text => text
-        .setPlaceholder('e.g., 30')
-        .setValue(String(this.plugin.settings.syncInterval))
-        .onChange(async (value) => {
-          const num = parseInt(value, 10);
-          if (!isNaN(num) && num > 0) {
-            this.plugin.settings.syncInterval = num;
-            await this.plugin.saveSettings();
-          }
-        }));
-
-    new Setting(containerEl)
-      .setName('Disable scoring')
-      .setDesc('Enable this to prevent scoring tasks in Habitica (read-only sync)')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.disableScoring)
-        .onChange(async (value) => {
-          this.plugin.settings.disableScoring = value;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName('Disable creating new tasks')
-      .setDesc('Enable this to prevent creating new tasks in Habitica from non-habitica tasks completed in Obsidian')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.disableCreating)
-        .onChange(async (value) => {
-          this.plugin.settings.disableCreating = value;
-          await this.plugin.saveSettings();
-        }));
+  async syncHabitica(allowUpdates?: boolean): Promise<void> {
+    this.statusBarItem.setText('⏳ Syncing…');
+    try {
+      const result = await this.syncManager.sync({ allowUpdates });
+      if (result === 'completed') {
+        this.statusBarItem.setText('✅ Synced just now');
+      } else {
+        // skipped — restore ready state, don't lie about syncing
+        this.statusBarItem.setText('🔄 Ready');
+      }
+    } catch (err) {
+      this.statusBarItem.setText('❌ Sync failed');
+      throw err;
+    }
   }
 }
 

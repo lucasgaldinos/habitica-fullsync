@@ -8,6 +8,7 @@ var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -21,6 +22,10 @@ var __copyProps = (to, from, except, desc) => {
   return to;
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var __publicField = (obj, key, value) => {
+  __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+  return value;
+};
 
 // src/main.ts
 var main_exports = {};
@@ -28,447 +33,23 @@ __export(main_exports, {
   default: () => main_default
 });
 module.exports = __toCommonJS(main_exports);
+var import_obsidian5 = require("obsidian");
+
+// src/api/api-client.ts
 var import_obsidian = require("obsidian");
 
-// src/api-client.ts
-var HabiticaApiClient = class {
-  /**
-   * @param apiUser  Habitica account user ID (UUID). Sent as `x-api-user` header.
-   * @param apiToken Habitica API token. Sent as `x-api-key` header.
-   */
-  constructor(apiUser, apiToken) {
-    this.apiUser = apiUser;
-    this.apiToken = apiToken;
-    this.baseUrl = "https://habitica.com/api/v3";
-    this.headers = {
-      "x-api-user": apiUser,
-      "x-api-key": apiToken,
-      "x-client": "habitica-fullsync-js",
-      "Content-Type": "application/json"
-    };
-  }
-  /**
-   * Wraps `fetch` with automatic retry on HTTP 429 (rate limited) using exponential backoff.
-   *
-   * On a 429 response, reads the `X-RateLimit-Reset` header (seconds until reset) and waits
-   * that long before retrying. If the header is absent, falls back to the current `delay`.
-   * `delay` doubles after each 429.
-   *
-   * @param url     Absolute URL to request.
-   * @param options Standard `RequestInit` options forwarded to `fetch`.
-   * @param retries Maximum total attempts before giving up. Defaults to `3`.
-   * @param delay   Initial backoff in milliseconds, doubles on each 429. Defaults to `1000`.
-   * @returns The raw `Response` for the first non-429 reply.
-   * @throws {Error} When all retries are exhausted.
-   */
-  async rateLimitedFetch(url, options = {}, retries = 3, delay = 1e3) {
-    for (let i = 0; i < retries; i++) {
-      const res = await fetch(url, options);
-      if (res.status === 429) {
-        const resetHeader = res.headers.get("X-RateLimit-Reset");
-        const resetParsed = resetHeader ? parseInt(resetHeader, 10) : NaN;
-        const reset = Number.isFinite(resetParsed) ? resetParsed : Math.ceil(delay / 1e3);
-        await new Promise((resolve) => setTimeout(resolve, reset * 1e3));
-        delay *= 2;
-        continue;
-      }
-      return res;
-    }
-    throw new Error("Max retries reached for " + url);
-  }
-  /**
-   * Validates an API `Response` and extracts the `data` payload from the Habitica envelope.
-   *
-   * Checks in order:
-   * 1. `res.ok` — throws on any non-2xx HTTP status, including up to 200 chars of the body.
-   * 2. JSON parseability — throws if `res.json()` rejects.
-   * 3. `json.success === false` — throws with `json.message` on application-level errors.
-   *
-   * @param res     The raw `Response` from {@link rateLimitedFetch}.
-   * @param context Human-readable label in error messages (e.g. `'fetchUserTasks'`).
-   * @returns `json.data` cast to `T`.
-   * @throws {Error} On HTTP error, parse failure, or Habitica application error.
-   */
-  async _parseResponse(res, context) {
-    if (!res.ok) {
-      let body = "";
-      try {
-        body = await res.text();
-      } catch (_) {
-      }
-      throw new Error(`Habitica API error [${context}]: HTTP ${res.status} \u2014 ${body.slice(0, 200)}`);
-    }
-    let json;
-    try {
-      json = await res.json();
-    } catch (e) {
-      throw new Error(`Habitica API error [${context}]: invalid JSON response`);
-    }
-    if (json.success === false) {
-      throw new Error(`Habitica API error [${context}]: ${json.message || "unknown error"}`);
-    }
-    return json.data;
-  }
-  /**
-   * Fetches all tasks belonging to the authenticated user.
-   * Calls `GET /api/v3/tasks/user`.
-   * @throws {Error} On network failure, HTTP error, or Habitica application error.
-   */
-  async fetchUserTasks() {
-    const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/user`, { headers: this.headers });
-    return this._parseResponse(res, "fetchUserTasks");
-  }
-  /**
-   * Fetches all tags belonging to the authenticated user.
-   * Calls `GET /api/v3/tags`. Used to build a tag-lookup map (`id → name`) for task formatting.
-   * @throws {Error} On network failure, HTTP error, or Habitica application error.
-   */
-  async fetchTags() {
-    const res = await this.rateLimitedFetch(`${this.baseUrl}/tags`, { headers: this.headers });
-    return this._parseResponse(res, "fetchTags");
-  }
-  /**
-   * Fetches all tasks belonging to a Habitica group (party or guild).
-   * Calls `GET /api/v3/tasks/group/:groupId`.
-   * @param groupId UUID of the Habitica group.
-   * @throws {Error} On network failure, HTTP error, or Habitica application error.
-   */
-  async fetchGroupTasks(groupId) {
-    const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/group/${groupId}`, { headers: this.headers });
-    return this._parseResponse(res, "fetchGroupTasks");
-  }
-  /**
-   * Creates a new task in Habitica.
-   * Calls `POST /api/v3/tasks/user`. Only fields present in `input` are sent.
-   *
-   * @param input Task fields. `text` and `type` are required; `priority`, `date`,
-   *              `startDate`, `frequency`, `tags`, and `notes` are optional. Habits default
-   *              to `up: true` / `down: false`.
-   * @returns The newly created task, including the server-assigned `id`.
-   * @throws {Error} On network failure, HTTP error, or Habitica application error.
-   */
-  async createTask(input) {
-    const body = { text: input.text, type: input.type };
-    if (input.notes)
-      body.notes = input.notes;
-    else
-      body.notes = "Created from Obsidian";
-    if (typeof input.priority === "number")
-      body.priority = input.priority;
-    if (input.date)
-      body.date = input.date;
-    if (input.startDate)
-      body.startDate = input.startDate;
-    if (input.frequency)
-      body.frequency = input.frequency;
-    if (Array.isArray(input.tags) && input.tags.length)
-      body.tags = input.tags;
-    if (input.type === "habit") {
-      body.up = true;
-      body.down = false;
-    }
-    const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/user`, {
-      method: "POST",
-      headers: this.headers,
-      body: JSON.stringify(body)
-    });
-    return this._parseResponse(res, "createTask");
-  }
-  /**
-   * Creates a new tag in Habitica.
-   * Calls `POST /api/v3/tags`.
-   * @param name Display name of the tag.
-   * @returns The newly created tag, including the server-assigned `id`.
-   * @throws {Error} On network failure, HTTP error, or Habitica application error.
-   */
-  async createTag(name) {
-    const res = await this.rateLimitedFetch(`${this.baseUrl}/tags`, {
-      method: "POST",
-      headers: this.headers,
-      body: JSON.stringify({ name })
-    });
-    return this._parseResponse(res, "createTag");
-  }
-  /**
-   * Adds a checklist (subtask) item to an existing task.
-   * Calls `POST /api/v3/tasks/:taskId/checklist`.
-   * @param taskId UUID of the parent task.
-   * @param text   Display text of the checklist item.
-   * @returns The updated parent task, including the full `checklist` array.
-   * @throws {Error} On network failure, HTTP error, or Habitica application error.
-   */
-  async addChecklistItem(taskId, text) {
-    const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${taskId}/checklist`, {
-      method: "POST",
-      headers: this.headers,
-      body: JSON.stringify({ text })
-    });
-    return this._parseResponse(res, `addChecklistItem/${taskId}`);
-  }
-  /**
-   * Scores (completes or increments) a task in Habitica.
-   * Calls `POST /api/v3/tasks/:id/score/:direction`.
-   * @param id        UUID of the task to score.
-   * @param direction `'up'` for positive scoring; `'down'` for negative (habits only).
-   * @returns The raw score delta response (HP/XP/gold changes). Typed as `unknown` because
-   *          the shape varies by task type and is not consumed by the plugin.
-   * @throws {Error} On network failure, HTTP error, or Habitica application error.
-   */
-  async scoreTask(id, direction) {
-    const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${id}/score/${direction}`, {
-      method: "POST",
-      headers: this.headers
-    });
-    return this._parseResponse(res, `scoreTask/${id}`);
-  }
-};
-
-// src/vault-handler.ts
-function escapeRegExp(string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-var VaultHandler = class {
-  /** @param app The Obsidian application instance. Provides vault and file-system access. */
-  constructor(app) {
-    this.app = app;
-  }
-  /**
-   * Scans all Markdown files modified on or after `cutoffDate` for completed tasks not yet scored.
-   *
-   * A task qualifies if:
-   * 1. Its file `mtime` ≥ `cutoffDate`.
-   * 2. The line starts with `- [x]`.
-   * 3. The line does NOT contain `%%scored%%`.
-   * 4. The line has a `[completion:: YYYY-MM-DD]` field with a date ≥ `cutoffDate`.
-   *
-   * @param cutoffDate Earliest date to consider (tasks and files older than this are skipped).
-   * @returns Array of `{ line, file }` pairs for each qualifying task.
-   */
-  async getRecentCompletedTasks(cutoffDate) {
-    const completedTasks = [];
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      if (file.stat.mtime < cutoffDate.getTime())
-        continue;
-      const content = await this.app.vault.read(file);
-      for (const line of content.split("\n")) {
-        if (!line.startsWith("- [x]"))
-          continue;
-        if (line.includes("%%scored%%"))
-          continue;
-        const completionMatch = line.match(/\[completion:: (\d{4}-\d{2}-\d{2})\]/);
-        if (!completionMatch)
-          continue;
-        const completionDate = new Date(completionMatch[1]);
-        if (completionDate >= cutoffDate) {
-          completedTasks.push({ line, file });
-        }
-      }
-    }
-    return completedTasks;
-  }
-  /**
-   * Replaces an existing task line in a vault file with an updated version.
-   *
-   * Uses a three-strategy cascade to locate the target line:
-   *
-   * **Strategy 1 — ID match (preferred):** If `newLine` contains `[id:: <id>]`, searches for
-   * any line in the file containing the same ID token. Stable and collision-proof.
-   *
-   * **Strategy 2 — Prefix-regex fallback:** Extracts the text before the first ` [id::` in
-   * `newLine` and matches it as a prefix pattern. Used when the ID is not yet in the file.
-   *
-   * **Strategy 3 — Warning only:** If neither strategy matches, logs a warning without
-   * modifying the file. Prevents silent data corruption.
-   *
-   * @param file    The vault file to update.
-   * @param newLine The complete replacement line, including any new annotations like `%%scored%%`.
-   */
-  async updateLine(file, newLine) {
-    const content = await this.app.vault.read(file);
-    const idMatch = newLine.match(/\[id:: ([^\]]+)\]/);
-    if (idMatch) {
-      const id = idMatch[1];
-      const idPattern = new RegExp(`^[^
-]*\\[id:: ${escapeRegExp(id)}\\][^
-]*$`, "m");
-      if (idPattern.test(content)) {
-        const updated = content.replace(idPattern, newLine);
-        await this.app.vault.modify(file, updated);
-        return;
-      }
-    }
-    const prefix = newLine.split(" [id::")[0];
-    const prefixPattern = new RegExp(`^${escapeRegExp(prefix)}.*$`, "m");
-    if (prefixPattern.test(content)) {
-      const updated = content.replace(prefixPattern, newLine);
-      await this.app.vault.modify(file, updated);
-      return;
-    }
-    console.warn(`habitica-fullsync VaultHandler.updateLine: could not locate target line in "${file.path}". Line was:
-${newLine}`);
-  }
-  /**
-   * Scans a single vault file for checked-off task lines with a Habitica ID that have
-   * not yet been marked `%%scored%%`. Used to detect tasks the user marks complete
-   * directly in the sync output file (`habitica-fullsync.md`).
-   *
-   * Only `todo` and `daily` task lines are safe to score via this path because:
-   * - Habitica marks them `completed: true` after scoring, making them idempotent.
-   * - Habits never become `completed: true`, so they would be re-scored on every sync
-   *   until the file is regenerated.
-   *
-   * @param filePath Vault-relative path to the sync output file.
-   * @returns Array of `{ id, line }` for each qualifying task, deduplicated by ID.
-   */
-  async getCheckedTasksFromFile(filePath) {
-    try {
-      const content = await this.app.vault.adapter.read(filePath);
-      const seen = /* @__PURE__ */ new Set();
-      const results = [];
-      for (const line of content.split("\n")) {
-        if (!line.startsWith("- [x]"))
-          continue;
-        if (line.includes("%%scored%%"))
-          continue;
-        const idMatch = line.match(/\[id:: ([^\]]+)\]/);
-        if (idMatch && !seen.has(idMatch[1])) {
-          seen.add(idMatch[1]);
-          results.push({ id: idMatch[1], line });
-        }
-      }
-      return results;
-    } catch (_) {
-      return [];
-    }
-  }
-  /**
-   * Scans a single vault file for hand-written task lines eligible to be created in Habitica.
-   *
-   * A line qualifies if it is a top-level (non-indented) `- [ ]` line that:
-   * - has **no** `[id:: ...]` field (not yet a managed task),
-   * - is not the `_No tasks found._` placeholder.
-   *
-   * The current `### ` level-3 heading is tracked as the line's `section` (used to infer task
-   * type). Lines inside a `#### Group Tasks` subsection are **skipped** — group-task creation is
-   * not supported and would otherwise create a personal task. Any following nested `> [!note]`
-   * callout lines and nested `  - [ ]` checklist lines are gathered with the task.
-   *
-   * @param filePath Vault-relative path to the sync output file.
-   * @returns Array of `{ line, section, notes, checklistTexts }`. Never throws — returns `[]`
-   *          if the file does not exist yet.
-   */
-  async getCreatableLinesFromFile(filePath) {
-    try {
-      const content = await this.app.vault.adapter.read(filePath);
-      const lines = content.split("\n");
-      const results = [];
-      let section = "";
-      let inGroupSubsection = false;
-      for (let i = 0; i < lines.length; i++) {
-        const raw = lines[i];
-        const h3 = raw.match(/^### (.+)$/);
-        if (h3) {
-          section = h3[1].trim();
-          inGroupSubsection = false;
-          continue;
-        }
-        if (/^#### /.test(raw)) {
-          inGroupSubsection = true;
-          continue;
-        }
-        if (!/^- \[ \] /.test(raw))
-          continue;
-        if (raw.includes("[id::"))
-          continue;
-        if (raw.includes("_No tasks found._"))
-          continue;
-        if (inGroupSubsection) {
-          console.warn(`habitica-fullsync VaultHandler.getCreatableLinesFromFile: skipping creatable line under "#### Group Tasks" (group-task creation unsupported): ${raw}`);
-          continue;
-        }
-        const noteSegs = [];
-        const checklistTexts = [];
-        for (let j = i + 1; j < lines.length; j++) {
-          const noteMatch = lines[j].match(/^\s{2,}> (.*)$/);
-          const checkMatch = lines[j].match(/^\s{2,}- \[[ xX]\] (.*)$/);
-          if (noteMatch) {
-            const seg = noteMatch[1].trim();
-            if (seg && !/^\[!/.test(seg))
-              noteSegs.push(seg);
-            continue;
-          }
-          if (checkMatch) {
-            const t = checkMatch[1].trim();
-            if (t)
-              checklistTexts.push(t);
-            continue;
-          }
-          break;
-        }
-        results.push({ line: raw, section, notes: noteSegs.join("\n"), checklistTexts });
-      }
-      return results;
-    } catch (_) {
-      return [];
-    }
-  }
-  /**
-   * Replaces the first exact occurrence of `oldLine` with `newLine` in a file addressed by path.
-   *
-   * Used for crash-safe write-back of a newly assigned `[id:: ...]` immediately after task
-   * creation, so a partial failure later in the sync cannot cause the same line to be created
-   * twice on the next run. Uses the path-based adapter (the file is a generated artifact that
-   * may not be a tracked `TFile` at this point).
-   *
-   * @param filePath Vault-relative path to the file.
-   * @param oldLine  The exact current line text to replace.
-   * @param newLine  The replacement line text.
-   */
-  async updateLineInFile(filePath, oldLine, newLine) {
-    try {
-      const content = await this.app.vault.adapter.read(filePath);
-      if (!content.includes(oldLine)) {
-        console.warn(`habitica-fullsync VaultHandler.updateLineInFile: could not locate line in "${filePath}".`);
-        return;
-      }
-      await this.app.vault.adapter.write(filePath, content.replace(oldLine, newLine));
-    } catch (err) {
-      console.error(`habitica-fullsync VaultHandler.updateLineInFile: failed to update "${filePath}":`, err);
-    }
-  }
-  /**
-   * Ensures a folder exists in the vault, creating it if necessary.
-   * Does nothing if `folderPath` is an empty string.
-   * @param folderPath Vault-relative path (e.g. `'Habitica/Tasks'`).
-   */
-  async ensureFolder(folderPath) {
-    if (!folderPath)
-      return;
-    const folderExists = await this.app.vault.adapter.exists(folderPath);
-    if (!folderExists) {
-      await this.app.vault.createFolder(folderPath);
-    }
-  }
-  /**
-   * Writes a string to a vault file, creating or overwriting it.
-   * Uses `vault.adapter.write` to allow writing to paths that may or may not already exist.
-   * @param filePath Vault-relative path (e.g. `'Habitica/habitica-fullsync.md'`).
-   * @param content  The complete string content to write.
-   */
-  async writeFile(filePath, content) {
-    await this.app.vault.adapter.write(filePath, content);
-  }
-};
-
-// src/helpers.ts
+// src/markdown/tags.ts
 var RESERVED_TYPE_TAGS = /* @__PURE__ */ new Set(["daily", "habit", "reward"]);
-function isMobilePlatform() {
-  const win = window;
-  return !!(win == null ? void 0 : win.isMobile) || !!(win == null ? void 0 : win.cordova);
-}
+var sanitizeCache = /* @__PURE__ */ new Map();
 function sanitizeTag(name) {
-  const sanitized = String(name != null ? name : "").trim().replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_\-/]+/gu, "").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
-  return sanitized.length > 0 ? sanitized : "unknown";
+  const raw = String(name != null ? name : "");
+  const cached = sanitizeCache.get(raw);
+  if (cached !== void 0)
+    return cached;
+  const sanitized = raw.trim().replace(/\s+/g, "-").replace(/[^\p{L}\p{N}\p{Extended_Pictographic}_\-/]+/gu, "").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
+  const result = sanitized.length > 0 ? sanitized : "unknown";
+  sanitizeCache.set(raw, result);
+  return result;
 }
 function buildTagReverseIndex(tagLookup) {
   const index = {};
@@ -480,12 +61,1161 @@ function buildTagReverseIndex(tagLookup) {
 function normalizeTagKey(name) {
   return String(name != null ? name : "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
 }
+
+// src/markdown/inline-fields.ts
+var FIELD_RE = /\[([a-zA-Z]+):: ?([^\]]*)\]/g;
+function parseInlineFields(text) {
+  const fields = /* @__PURE__ */ new Map();
+  const cleaned = text.replace(FIELD_RE, (_match, key, value) => {
+    fields.set(key.toLowerCase(), value.trimEnd());
+    return "";
+  });
+  return { fields, text: collapseWhitespace(cleaned) };
+}
+function extractId(text) {
+  const match = text.match(/\[id:: ?([^\]]*)\]/);
+  return match ? match[1] || void 0 : void 0;
+}
+function extractCompletionDate(text) {
+  const match = text.match(/\[completion:: ?(\d{4}-\d{2}-\d{2})\]/);
+  return match ? match[1] : void 0;
+}
+function extractSubId(text) {
+  const match = text.match(/\[subId:: ?([^\]]*)\]/);
+  if (!match)
+    return void 0;
+  const trimmed = match[1].trim();
+  return trimmed || void 0;
+}
+function stripInlineFields(text) {
+  return collapseWhitespace(text.replace(FIELD_RE, ""));
+}
+function hasScoredMarker(text) {
+  return text.includes("%%scored%%");
+}
+function stripScoredMarker(text) {
+  return text.split("%%scored%%").join("");
+}
+function buildInlineField(key, value) {
+  return `[${key}:: ${value.replace(/\]/g, "\\]")}]`;
+}
+function collapseWhitespace(text) {
+  return text.replace(/\s{2,}/g, " ").trim();
+}
+
+// src/markdown/parser.ts
+function parseFieldFromRegistry(fields, inlineKey) {
+  const def = FIELD_REGISTRY.find((f) => f.inlineKey === inlineKey);
+  if (!def)
+    return void 0;
+  return def.parse(fields.get(inlineKey));
+}
+var PRIORITY_NAME_TO_VALUE = {
+  high: 2,
+  medium: 1.5,
+  low: 1,
+  lowest: 0.1
+};
+var PRIORITY_VALUE_TO_NAME = {
+  "2": "high",
+  "1.5": "medium",
+  "1": "low",
+  "0.1": "lowest"
+};
+function sectionToType(section) {
+  switch (section.trim().toLowerCase()) {
+    case "dailies":
+      return "daily";
+    case "habits":
+      return "habit";
+    case "rewards":
+      return "reward";
+    case "to-dos":
+    case "todos":
+    case "to dos":
+      return "todo";
+    default:
+      return void 0;
+  }
+}
+function isValidDateString(s) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s))
+    return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+function cleanTitle(text) {
+  return stripScoredMarker(stripInlineFields(text)).replace(/^#{1,6}\s+/, "").replace(/#[\p{L}\p{N}_\-/]+/gu, "").replace(/\s{2,}/g, " ").trim();
+}
+function parseTaskFields(rest, section, reverseIndex, dailyDue) {
+  const type = sectionToType(section);
+  const { fields } = parseInlineFields(rest);
+  let priority;
+  let date;
+  let startDate;
+  let frequency;
+  const dueValue = fields.get("due");
+  if (dueValue === "none") {
+    date = "";
+  } else if (dueValue && isValidDateString(dueValue)) {
+    if (type === "todo")
+      date = dueValue;
+    else if (dailyDue && type === "daily") {
+      startDate = dueValue;
+      frequency = "daily";
+    }
+  } else if (dailyDue && type === "daily") {
+    frequency = "daily";
+  }
+  const explicitFrequency = fields.get("frequency");
+  if (explicitFrequency && ["daily", "weekly", "monthly", "yearly"].includes(explicitFrequency.toLowerCase())) {
+    frequency = explicitFrequency.toLowerCase();
+  }
+  const explicitStartDate = fields.get("startdate");
+  if (explicitStartDate && isValidDateString(explicitStartDate)) {
+    startDate = explicitStartDate;
+  }
+  let everyX;
+  let repeat;
+  let up;
+  let down;
+  let streak;
+  let attribute;
+  const delete_ = fields.has("delete");
+  const priorityName = fields.get("priority");
+  if (priorityName === "none") {
+    priority = 1;
+  } else if (priorityName && priorityName in PRIORITY_NAME_TO_VALUE) {
+    priority = PRIORITY_NAME_TO_VALUE[priorityName.toLowerCase()];
+  }
+  everyX = parseFieldFromRegistry(fields, "everyx");
+  repeat = parseFieldFromRegistry(fields, "repeat");
+  up = parseFieldFromRegistry(fields, "up");
+  down = parseFieldFromRegistry(fields, "down");
+  streak = parseFieldFromRegistry(fields, "streak");
+  attribute = parseFieldFromRegistry(fields, "attribute");
+  const tagIds = [];
+  const newTagNames = [];
+  const seenTagKeys = /* @__PURE__ */ new Set();
+  const tagMatches = rest.match(/#[\p{L}\p{N}_\-/]+/gu) || [];
+  for (const tag of tagMatches) {
+    const body = tag.slice(1);
+    const key = normalizeTagKey(body);
+    if (RESERVED_TYPE_TAGS.has(key))
+      continue;
+    if (seenTagKeys.has(key))
+      continue;
+    seenTagKeys.add(key);
+    const existingId = reverseIndex[key];
+    if (existingId)
+      tagIds.push(existingId);
+    else
+      newTagNames.push(body.replace(/-/g, " "));
+  }
+  const text = cleanTitle(rest);
+  return {
+    type,
+    priority,
+    date,
+    startDate,
+    frequency,
+    everyX,
+    repeat,
+    up,
+    down,
+    streak,
+    attribute,
+    delete: delete_,
+    tagIds,
+    newTagNames,
+    text
+  };
+}
+function parseTaskLine(line, section, reverseIndex, notes, checklistItems) {
+  const rest = line.replace(/^- \[ \]\s*/, "");
+  const f = parseTaskFields(rest, section, reverseIndex, true);
+  return {
+    text: f.text,
+    type: f.type,
+    priority: f.priority,
+    date: f.date,
+    startDate: f.startDate,
+    frequency: f.frequency,
+    everyX: f.everyX,
+    tagIds: f.tagIds,
+    newTagNames: f.newTagNames,
+    notes: notes.trim() ? notes.trim() : void 0,
+    checklistItems
+  };
+}
+function parseManagedTaskLine(line, section, reverseIndex, notes, checklistItems) {
+  var _a;
+  const rest = line.replace(/^- \[[ xX]\]\s*/, "");
+  const id = (_a = extractId(rest)) != null ? _a : "";
+  const f = parseTaskFields(rest, section, reverseIndex, false);
+  return {
+    id,
+    text: f.text,
+    priority: f.priority,
+    date: f.date,
+    frequency: f.frequency,
+    everyX: f.everyX,
+    repeat: f.repeat,
+    startDate: f.startDate,
+    up: f.up,
+    down: f.down,
+    streak: f.streak,
+    attribute: f.attribute,
+    delete: f.delete,
+    tagIds: f.tagIds,
+    newTagNames: f.newTagNames,
+    notes: notes.trim() ? notes.trim() : void 0,
+    checklistItems
+  };
+}
+
+// src/markdown/formatter.ts
+function toLocaleDateStringSafe(dateInput) {
+  if (!dateInput)
+    return null;
+  const d = new Date(dateInput);
+  return isNaN(d.getTime()) ? null : d.toLocaleDateString("en-CA");
+}
+function filterActive(list, type, scoredIds) {
+  return list.filter(
+    (task) => task.type === type && !task.completed && !scoredIds.has(task.id)
+  );
+}
+function formatTasks(taskList, tagLookup, TODAY) {
+  if (!taskList.length)
+    return ["_No tasks found._"];
+  return taskList.map((task) => formatTaskLine(task, tagLookup, TODAY));
+}
+function getNextDailyDueDate(task) {
+  var _a;
+  try {
+    const start = new Date(((_a = task.startDate) != null ? _a : "") + "T00:00:00");
+    if (isNaN(start.getTime()))
+      return null;
+    const startMs = start.getTime();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayMs = today.getTime();
+    const freq = task.frequency;
+    const everyX = task.everyX || 1;
+    const baseDate = startMs > todayMs ? new Date(startMs) : new Date(todayMs);
+    if (freq === "daily") {
+      if (todayMs < startMs) {
+        return start.toLocaleDateString("en-CA");
+      }
+      const dayMs = 24 * 60 * 60 * 1e3;
+      const daysSinceStart = Math.round((todayMs - startMs) / dayMs);
+      const remainder = daysSinceStart % everyX;
+      const daysUntilNext = remainder === 0 ? 0 : everyX - remainder;
+      const nextMs = todayMs + daysUntilNext * dayMs;
+      const next = new Date(nextMs);
+      return next.toLocaleDateString("en-CA");
+    }
+    if (freq === "weekly" && task.repeat) {
+      const repeatDays = task.repeat;
+      const weekdayKeys = ["su", "m", "t", "w", "th", "f", "s"];
+      const MAX_WEEKLY_LOOKAHEAD_DAYS = 30;
+      for (let i = 0; i < MAX_WEEKLY_LOOKAHEAD_DAYS; i++) {
+        const check = new Date(baseDate);
+        check.setDate(baseDate.getDate() + i);
+        const key = weekdayKeys[check.getDay()];
+        if (repeatDays[key] && check >= start) {
+          return check.toLocaleDateString("en-CA");
+        }
+      }
+    }
+    return null;
+  } catch (err) {
+    console.error(
+      "habitica-fullsync formatter.getNextDailyDueDate: error calculating daily due date:",
+      err
+    );
+    return null;
+  }
+}
+function formatTaskLine(task, tagLookup, TODAY) {
+  var _a;
+  const status = task.completed ? "x" : " ";
+  const cleanText = task.text.replace(/^#{1,6}\s+/, "").trim();
+  const tagBodies = (Array.isArray(task.tags) ? task.tags : []).map(
+    (id) => sanitizeTag(tagLookup[id] || "unknown")
+  );
+  const tags = [...new Set(tagBodies)].map((body) => `#${body}`);
+  if (task.type === "daily" && !tags.includes("#daily"))
+    tags.push("#daily");
+  if (task.type === "habit" && !tags.includes("#habit"))
+    tags.push("#habit");
+  if (task.type === "reward" && !tags.includes("#reward"))
+    tags.push("#reward");
+  const priorityNum = task.priority;
+  const priorityName = priorityNum != null ? PRIORITY_VALUE_TO_NAME[String(priorityNum)] : void 0;
+  if (priorityNum != null && !priorityName) {
+    console.warn(`habitica-fullsync formatTaskLine: unknown priority value ${priorityNum} for task ${task.id} \u2014 rendering as 'Unknown'`);
+  }
+  const priority = priorityName || "Unknown";
+  let line = `- [${status}] ${cleanText} ${tags.join(" ")} ${buildInlineField("id", task.id)} ${buildInlineField("priority", priority)}`;
+  const dueDateStr = toLocaleDateStringSafe(task.date);
+  if (task.type === "todo" && dueDateStr) {
+    line += ` ${buildInlineField("due", dueDateStr)}`;
+  }
+  if (task.type === "daily") {
+    const dueDate = getNextDailyDueDate(task);
+    if (dueDate)
+      line += ` ${buildInlineField("due", dueDate)}`;
+  }
+  if (task.completed && task.type !== "habit") {
+    line += ` ${buildInlineField("completion", TODAY)}`;
+  }
+  const CORE_RENDERED_KEYS = /* @__PURE__ */ new Set(["id", "priority", "due", "completion"]);
+  for (const def of FIELD_REGISTRY) {
+    if (CORE_RENDERED_KEYS.has(def.inlineKey))
+      continue;
+    if (def.type === "stringSet" || def.type === "sentinel")
+      continue;
+    const token = def.render(task);
+    if (token)
+      line += ` ${token}`;
+  }
+  const blocks = [line];
+  const notesRaw = task.notes != null ? String(task.notes) : "";
+  if (notesRaw.trim()) {
+    const segments = notesRaw.split(/[\r\n]+/).map((s) => s.replace(/^#{1,6}\s+/, "").trim()).filter((s) => s.length > 0);
+    if (segments.length > 0) {
+      blocks.push("  > [!note]");
+      for (const seg of segments)
+        blocks.push(`  > ${seg}`);
+    }
+  }
+  const checklist = Array.isArray(task.checklist) ? task.checklist : [];
+  for (const item of checklist) {
+    const rawText = String((_a = item.text) != null ? _a : "").trim();
+    if (!rawText)
+      continue;
+    const lines = rawText.split(/\r?\n/);
+    const firstLine = lines[0].replace(/^#{1,6}\s+/, "").trim();
+    if (!firstLine)
+      continue;
+    const subIdPart = item.id ? ` ${buildInlineField("subId", item.id)}` : "";
+    blocks.push(`  - [${item.completed ? "x" : " "}] ${firstLine}${subIdPart}`);
+    if (lines.length > 1) {
+      let lastNonEmpty = lines.length - 1;
+      while (lastNonEmpty > 0 && lines[lastNonEmpty].trim() === "")
+        lastNonEmpty--;
+      if (lastNonEmpty > 0) {
+        blocks.push("");
+        for (let i = 1; i <= lastNonEmpty; i++) {
+          const line2 = lines[i];
+          blocks.push(line2.trim() === "" ? "" : `    ${line2}`);
+        }
+      }
+    }
+  }
+  return blocks.join("\n");
+}
+
+// src/field-registry.ts
+function parseNumber(raw) {
+  if (raw === void 0)
+    return void 0;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : void 0;
+}
+function parseBoolean(raw) {
+  if (raw === "true")
+    return true;
+  if (raw === "false")
+    return false;
+  return void 0;
+}
+function parseEnum(raw, allowed) {
+  if (raw === void 0)
+    return void 0;
+  const lower = raw.toLowerCase();
+  return allowed.includes(lower) ? lower : void 0;
+}
+var WEEKDAY_KEYS = ["su", "m", "t", "w", "th", "f", "s"];
+function diffSimple(parsed, habitica) {
+  return parsed !== void 0 && parsed !== habitica;
+}
+function diffWeekdayMap(parsed, habitica) {
+  const p = parsed;
+  const h = habitica != null ? habitica : {};
+  if (!p)
+    return false;
+  return WEEKDAY_KEYS.some((d) => {
+    var _a, _b;
+    return ((_a = p[d]) != null ? _a : false) !== ((_b = h[d]) != null ? _b : true);
+  });
+}
+function diffTagSet(parsed, habitica) {
+  const p = new Set(parsed);
+  const h = new Set(Array.isArray(habitica) ? habitica : []);
+  return p.size !== h.size || [...p].some((id) => !h.has(id)) || [...h].some((id) => !p.has(id));
+}
+function renderSimple(key, value) {
+  if (value === void 0 || value === null)
+    return void 0;
+  return buildInlineField(key, String(value));
+}
+function renderPriority(task) {
+  if (task.priority == null)
+    return void 0;
+  const name = PRIORITY_VALUE_TO_NAME[String(task.priority)];
+  return name ? buildInlineField("priority", name) : void 0;
+}
+function renderDate(key, raw) {
+  const safe = toLocaleDateStringSafe(raw);
+  return safe ? buildInlineField(key, safe) : void 0;
+}
+function renderFrequency(task) {
+  if (!task.frequency || task.frequency === "daily")
+    return void 0;
+  return buildInlineField("frequency", task.frequency);
+}
+function renderEveryX(task) {
+  if (task.everyX === void 0 || task.everyX === 1 || !Number.isFinite(task.everyX))
+    return void 0;
+  return buildInlineField("everyX", String(task.everyX));
+}
+function renderRepeat(task) {
+  if (!task.repeat)
+    return void 0;
+  const active = WEEKDAY_KEYS.filter((d) => task.repeat[d]);
+  if (active.length === 0 || active.length === 7)
+    return void 0;
+  return buildInlineField("repeat", active.join(","));
+}
+function renderStartDate(task) {
+  if (!task.startDate || task.type !== "daily")
+    return void 0;
+  return renderDate("startDate", task.startDate);
+}
+function renderDelete(_task) {
+  return void 0;
+}
+var FIELD_REGISTRY = [
+  // ── Core identity fields (always rendered) ──
+  {
+    name: "text",
+    inlineKey: "text",
+    type: "string",
+    apiKey: "text",
+    parse: (raw) => raw != null ? raw : void 0,
+    render: (_task) => void 0,
+    // text is the title, rendered separately
+    diff: (parsed, _habitica, _ctx) => {
+      var _a;
+      const p = parsed != null ? parsed : "";
+      const h = cleanTitle((_a = _ctx.text) != null ? _a : "");
+      return p && p !== h ? ["text", p] : void 0;
+    }
+  },
+  // ── Simple scalar fields ──
+  {
+    name: "priority",
+    inlineKey: "priority",
+    type: "number",
+    apiKey: "priority",
+    parse: (raw) => {
+      var _a;
+      if (!raw)
+        return void 0;
+      if (raw === "none")
+        return 1;
+      return (_a = PRIORITY_NAME_TO_VALUE[raw.toLowerCase()]) != null ? _a : void 0;
+    },
+    render: renderPriority,
+    diff: (parsed, habitica) => diffSimple(parsed, habitica) ? ["priority", parsed] : void 0
+  },
+  {
+    name: "up",
+    inlineKey: "up",
+    type: "boolean",
+    apiKey: "up",
+    parse: parseBoolean,
+    render: (t) => renderSimple("up", t.up),
+    diff: (p, h) => diffSimple(p, h) ? ["up", p] : void 0
+  },
+  {
+    name: "down",
+    inlineKey: "down",
+    type: "boolean",
+    apiKey: "down",
+    parse: parseBoolean,
+    render: (t) => renderSimple("down", t.down),
+    diff: (p, h) => diffSimple(p, h) ? ["down", p] : void 0
+  },
+  {
+    name: "streak",
+    inlineKey: "streak",
+    type: "number",
+    apiKey: "streak",
+    parse: parseNumber,
+    render: (t) => renderSimple("streak", t.streak),
+    diff: (p, h) => diffSimple(p, h) ? ["streak", p] : void 0
+  },
+  {
+    name: "attribute",
+    inlineKey: "attribute",
+    type: "enum",
+    apiKey: "attribute",
+    allowedValues: ["str", "int", "per", "con"],
+    parse: (raw) => parseEnum(raw, ["str", "int", "per", "con"]),
+    render: (t) => t.attribute ? renderSimple("attribute", t.attribute) : void 0,
+    diff: (p, h) => diffSimple(p, h) ? ["attribute", p] : void 0
+  },
+  {
+    name: "frequency",
+    inlineKey: "frequency",
+    type: "enum",
+    apiKey: "frequency",
+    allowedValues: ["daily", "weekly", "monthly", "yearly"],
+    parse: (raw) => parseEnum(raw, ["daily", "weekly", "monthly", "yearly"]),
+    render: renderFrequency,
+    diff: (p, h) => diffSimple(p, h) ? ["frequency", p] : void 0
+  },
+  {
+    name: "everyX",
+    inlineKey: "everyX",
+    type: "number",
+    apiKey: "everyX",
+    parse: parseNumber,
+    render: renderEveryX,
+    diff: (p, h) => diffSimple(p, h) ? ["everyX", p] : void 0
+  },
+  // ── Date fields ──
+  {
+    name: "date",
+    inlineKey: "due",
+    type: "date",
+    apiKey: "date",
+    parse: (raw) => {
+      if (!raw)
+        return void 0;
+      if (raw === "none")
+        return "";
+      return isValidDateString(raw) ? raw : void 0;
+    },
+    render: (t) => t.date ? renderDate("due", t.date) : void 0,
+    diff: (parsed, habitica, ctx) => {
+      if (ctx.type !== "todo")
+        return void 0;
+      const p = parsed;
+      if (p === void 0)
+        return void 0;
+      const h = habitica || "";
+      return p !== h ? ["date", p] : void 0;
+    }
+  },
+  {
+    name: "startDate",
+    inlineKey: "startDate",
+    type: "date",
+    apiKey: "startDate",
+    parse: (raw) => raw && isValidDateString(raw) ? raw : void 0,
+    render: renderStartDate,
+    diff: (p, h) => diffSimple(p, h) ? ["startDate", p] : void 0
+  },
+  // ── Text fields ──
+  {
+    name: "notes",
+    inlineKey: "notes",
+    type: "string",
+    apiKey: "notes",
+    parse: (raw) => raw != null ? raw : void 0,
+    // notes come from callout scanner, not inline fields
+    render: (_task) => void 0,
+    // notes rendered as callout, not inline field
+    diff: (parsed, habitica) => {
+      const p = (parsed != null ? parsed : "").trim();
+      const h = (habitica != null ? habitica : "").trim();
+      return p !== h ? ["notes", p || ""] : void 0;
+    }
+  },
+  // ── Compound fields ──
+  {
+    name: "tags",
+    inlineKey: "tags",
+    type: "stringSet",
+    apiKey: "tags",
+    parse: (_raw) => void 0,
+    // tags parsed from #token not inline fields — handled by parseTaskFields
+    render: (_task) => void 0,
+    // tags rendered with # prefix — handled by formatTaskLine
+    diff: (parsed, habitica) => diffTagSet(parsed, habitica) ? ["tags", parsed] : void 0
+  },
+  {
+    name: "repeat",
+    inlineKey: "repeat",
+    type: "weekdayMap",
+    apiKey: "repeat",
+    parse: (raw) => {
+      if (!raw)
+        return void 0;
+      const validDays = ["su", "m", "t", "w", "th", "f", "s"];
+      const days = raw.toLowerCase().split(",").map((d) => d.trim()).filter((d) => validDays.includes(d));
+      if (days.length === 0)
+        return void 0;
+      const map = {};
+      for (const day of validDays)
+        map[day] = days.includes(day);
+      return map;
+    },
+    render: renderRepeat,
+    diff: (parsed, habitica) => diffWeekdayMap(parsed, habitica) ? ["repeat", parsed] : void 0
+  },
+  // ── Sentinel fields (one-way triggers, never rendered) ──
+  {
+    name: "delete",
+    inlineKey: "delete",
+    type: "sentinel",
+    apiKey: "",
+    // triggers DELETE /tasks/:id, not PUT
+    parse: (_raw) => true,
+    // presence of [delete::] → true
+    render: renderDelete,
+    diff: (_p, _h) => void 0
+    // delete triggers a separate API call, not PUT
+  }
+];
+
+// src/api/api-client.ts
+var HabiticaApiClient = class {
+  /**
+   * @param apiUser  Habitica account user ID (UUID).
+   * @param apiToken Habitica API token.
+   * @param opts.baseUrl              Base URL for the Habitica v3 API. Defaults to `'https://habitica.com/api/v3'`.
+   * @param opts.minRequestIntervalMs Minimum pause between outgoing requests, in milliseconds. Defaults to `2200`.
+   * @param opts.debug                When `true`, emits `console.debug` instrumentation for request timing and rate-limit diagnostics. Defaults to `false`.
+   */
+  constructor(apiUser, apiToken, opts) {
+    __publicField(this, "userId");
+    __publicField(this, "apiToken");
+    __publicField(this, "baseUrl");
+    __publicField(this, "headers");
+    /** Minimum milliseconds between outgoing requests. Defaults to 2,200 ms to respect Habitica's 30 req/min limit (rateLimiter.js: BASE_POINTS=30, BASE_DURATION=60). */
+    __publicField(this, "minInterval");
+    /** Timestamp (ms) of the last request's start — used for inter-request spacing. */
+    __publicField(this, "lastRequestTime", 0);
+    /** Promise chain — ensures requests are serialized so spacing applies to ALL calls. */
+    __publicField(this, "queue", Promise.resolve());
+    /** Proactive rate-limit tracking — values from the most recent response headers. */
+    __publicField(this, "remaining", 30);
+    __publicField(this, "limit", 30);
+    __publicField(this, "resetEpoch", 0);
+    /** When `true`, `console.debug` instrumentation is emitted for timing and rate-limit diagnostics. */
+    __publicField(this, "debug");
+    /** Per-sync counters — reset by {@link resetSyncStats} at the start of each sync run. */
+    __publicField(this, "syncStats", { totalCalls: 0, rateLimitedCalls: 0, byOperation: {} });
+    /** Timestamp (ms) set by {@link setSyncStartTime} at the beginning of a sync; used for elapsed-time logging. */
+    __publicField(this, "_syncStartTime", 0);
+    var _a, _b, _c;
+    this.userId = apiUser;
+    this.apiToken = apiToken;
+    this.baseUrl = (_a = opts == null ? void 0 : opts.baseUrl) != null ? _a : "https://habitica.com/api/v3";
+    this.minInterval = (_b = opts == null ? void 0 : opts.minRequestIntervalMs) != null ? _b : 2200;
+    this.debug = (_c = opts == null ? void 0 : opts.debug) != null ? _c : false;
+    this.headers = {
+      "x-api-user": apiUser,
+      "x-api-key": apiToken,
+      "x-client": "habitica-fullsync-js",
+      "Content-Type": "application/json"
+    };
+  }
+  /** Public accessor so {@link SyncManager} can gate its own step-timing on the same flag. */
+  get isDebugEnabled() {
+    return this.debug;
+  }
+  /**
+   * Wraps `fetch` with automatic retry on transient failures using exponential backoff.
+   *
+   * Retries on HTTP 429 (rate limited), 502/503/504 (transient gateway errors), and network failures (`fetch` throwing, e.g. CORS blocks after repeated failures). On a 429, reads the `X-RateLimit-Reset` header (epoch seconds) and waits the remaining time up to 60 s; otherwise waits the current `delay`. `delay` doubles after each retry.
+   *
+   * @param url     Absolute URL to request.
+   * @param options Standard `RequestInit` options forwarded to `fetch`.
+   * @param retries Maximum total attempts before giving up. Defaults to `3`.
+   * @param delay   Initial backoff in milliseconds, doubles on each retry. Defaults to `1000`.
+   * @returns The raw `RequestUrlResponse` for the first non-retryable reply.
+   * @throws {Error} When all retries are exhausted.
+   */
+  async rateLimitedFetch(url, options = {}, retries = 3, delay = 1e3) {
+    for (let i = 0; i < retries; i++) {
+      let res;
+      try {
+        res = await (0, import_obsidian.requestUrl)({ url, method: options.method, headers: options.headers, body: options.body });
+      } catch (err) {
+        if (i < retries - 1) {
+          console.warn(`habitica-fullsync HabiticaApiClient.rateLimitedFetch: network error on ${url} (attempt ${i + 1}/${retries}), retrying in ${delay}ms:`, err);
+          await new Promise((resolve) => window.setTimeout(resolve, delay));
+          delay *= 2;
+          continue;
+        }
+        throw new Error("Max retries reached for " + url);
+      }
+      if (res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504) {
+        if (res.status === 429)
+          this.syncStats.rateLimitedCalls++;
+        if (i === retries - 1)
+          break;
+        const resetHeader = res.headers["x-ratelimit-reset"];
+        const resetParsed = resetHeader ? parseInt(resetHeader, 10) : NaN;
+        const computedWait = res.status === 429 && Number.isFinite(resetParsed) ? resetParsed * 1e3 - Date.now() : -1;
+        const waitMs = computedWait > 0 ? Math.min(computedWait, 6e4) : delay;
+        console.warn(`habitica-fullsync HabiticaApiClient.rateLimitedFetch: HTTP ${res.status} on ${url} (attempt ${i + 1}/${retries}), retrying in ${waitMs}ms.`);
+        await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+        delay *= 2;
+        continue;
+      }
+      const rem = res.headers["x-ratelimit-remaining"];
+      const lim = res.headers["x-ratelimit-limit"];
+      const rst = res.headers["x-ratelimit-reset"];
+      if (rem !== null) {
+        const v = parseInt(rem, 10);
+        if (Number.isFinite(v))
+          this.remaining = v;
+      }
+      if (lim !== null) {
+        const v = parseInt(lim, 10);
+        if (Number.isFinite(v))
+          this.limit = v;
+      }
+      if (rst !== null) {
+        const v = parseInt(rst, 10);
+        if (Number.isFinite(v))
+          this.resetEpoch = v;
+      }
+      if (this.debug) {
+        const method = options.method || "GET";
+        const path = url.replace(this.baseUrl, "");
+        const elapsedMs = this._syncStartTime > 0 ? Date.now() - this._syncStartTime : 0;
+        console.debug(`[hf:req] ${method} ${path} \u2192 ${res.status} | remaining: ${this.remaining}/${this.limit} | reset in ${this.resetEpoch}s | +${elapsedMs}ms`);
+      }
+      const warnThreshold = Math.ceil(this.limit * 0.17);
+      if (this.remaining <= warnThreshold) {
+        console.warn(`habitica-fullsync HabiticaApiClient.rateLimitedFetch: low rate-limit buffer \u2014 ${this.remaining}/${this.limit} remaining, reset in ${this.resetEpoch}s`);
+      }
+      return res;
+    }
+    throw new Error("Max retries reached for " + url);
+  }
+  /**
+   * Serialises an async operation so that all API calls are spaced by at least
+   * `minInterval` milliseconds. The existing `rateLimitedFetch` retry logic
+   * handles individual 429/5xx responses; this queue ensures that rapid-fire
+   * call sequences (e.g. scoring then creating tasks) don't burst past the
+   * rate limit in the first place.
+   */
+  _enqueue(op, operationName) {
+    const name = operationName || "unknown";
+    const run = async () => {
+      const now = Date.now();
+      const wait = Math.max(0, this.lastRequestTime + this.minInterval - now);
+      if (wait > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, wait));
+      }
+      const pauseThreshold = Math.ceil(this.limit * 0.1);
+      if (this.remaining <= pauseThreshold && this.resetEpoch > 0) {
+        const resetWait = this.resetEpoch * 1e3 - Date.now();
+        const extraWait = Math.min(resetWait > 0 ? resetWait : 6e4, 6e4);
+        if (this.debug) {
+          console.debug(`[hf:queue] adaptive pause: ${extraWait}ms (remaining=${this.remaining}/${this.limit}, reset in ${Math.round(Math.max(0, resetWait) / 1e3)}s)`);
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, extraWait));
+      }
+      this.syncStats.totalCalls++;
+      this.syncStats.byOperation[name] = (this.syncStats.byOperation[name] || 0) + 1;
+      const result = await op();
+      this.lastRequestTime = Date.now();
+      return result;
+    };
+    const next = this.queue.then(() => run(), () => run());
+    this.queue = next.then(() => {
+    });
+    return next;
+  }
+  /**
+   * Validates every Habitica API response before returning data.
+   *
+   * Checks in order:
+   * 1. `res.ok` — throws on any non-2xx HTTP status, including up to 200 chars of the body.
+   * 2. JSON parseability — throws if `res.json()` rejects.
+   * 3. `json.success === false` — throws with `json.message` on application-level errors.
+   *
+   * @param res     The raw `RequestUrlResponse` from {@link rateLimitedFetch}.
+   * @param context Human-readable label in error messages (e.g. `'fetchUserTasks'`).
+   * @returns `json.data` cast to `T`.
+   * @throws {Error} On HTTP error, parse failure, or Habitica application error.
+   */
+  async _parseResponse(res, context) {
+    if (res.status < 200 || res.status >= 300) {
+      const body = res.text;
+      throw new Error(`Habitica API error [${context}]: HTTP ${res.status} \u2014 ${body.slice(0, 200)}`);
+    }
+    const json = res.json;
+    if (!json || typeof json !== "object" || typeof json.success !== "boolean") {
+      throw new Error(`Habitica API error [${context}]: unexpected response shape \u2014 missing success field`);
+    }
+    if (json.success === false) {
+      throw new Error(`Habitica API error [${context}]: ${json.message || "unknown error"}`);
+    }
+    return json.data;
+  }
+  // ── Sync-stats helpers (Phase 8 diagnostics) ──
+  /** Called by {@link SyncManager} at the start of every sync run to anchor elapsed-time logs. */
+  setSyncStartTime() {
+    this._syncStartTime = Date.now();
+  }
+  /** Returns a snapshot of the per-sync call counters. Called in the sync `finally` block for the summary log. */
+  getSyncStats() {
+    return {
+      totalCalls: this.syncStats.totalCalls,
+      rateLimitedCalls: this.syncStats.rateLimitedCalls,
+      byOperation: { ...this.syncStats.byOperation }
+    };
+  }
+  /** Zeros out the per-sync counters. Called at the start of every sync run. */
+  resetSyncStats() {
+    this.syncStats = { totalCalls: 0, rateLimitedCalls: 0, byOperation: {} };
+  }
+  /**
+   * Fetches all tasks belonging to the authenticated user. Calls `GET /api/v3/tasks/user`.
+   * @throws {Error} On network failure, HTTP error, or Habitica application error.
+   */
+  async fetchUserTasks() {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/user`, { headers: this.headers });
+      return this._parseResponse(res, "fetchUserTasks");
+    }, "fetchUserTasks");
+  }
+  /**
+   * Fetches all tags belonging to the authenticated user. Calls `GET /api/v3/tags`. Used to build a tag-lookup map (`id → name`) for task formatting.
+   *
+   * @throws {Error} On network failure, HTTP error, or Habitica application error.
+   */
+  async fetchTags() {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tags`, { headers: this.headers });
+      return this._parseResponse(res, "fetchTags");
+    }, "fetchTags");
+  }
+  /**
+   * Fetches all tasks belonging to a Habitica group (party or guild). Calls `GET /api/v3/tasks/group/:groupId`.
+   * @param groupId UUID of the Habitica group.
+   * @throws {Error} On network failure, HTTP error, or Habitica application error.
+   */
+  async fetchGroupTasks(groupId) {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/group/${groupId}`, { headers: this.headers });
+      return this._parseResponse(res, "fetchGroupTasks");
+    }, "fetchGroupTasks");
+  }
+  /**
+   * Creates a new task in Habitica.
+   * Calls `POST /api/v3/tasks/user`. Only fields present in `input` are sent.
+   *
+   * @param input Task fields. `text` and `type` are required; `priority`, `date`, `startDate`, `frequency`, `tags`, and `notes` are optional. Habits default to `up: true` / `down: false`.
+   * @returns The newly created task, including the server-assigned `id`.
+   * @throws {Error} On network failure, HTTP error, or Habitica application error.
+   */
+  async createTask(input) {
+    const body = { text: input.text, type: input.type };
+    if (input.notes)
+      body.notes = input.notes;
+    else
+      body.notes = "Created from Obsidian";
+    for (const def of FIELD_REGISTRY) {
+      if (def.type === "sentinel" || def.type === "stringSet" || def.name === "text" || def.name === "notes")
+        continue;
+      const val = input[def.name];
+      if (val !== void 0 && val !== null && val !== "") {
+        body[def.apiKey] = val;
+      }
+    }
+    if (Array.isArray(input.tags) && input.tags.length)
+      body.tags = input.tags;
+    if (input.type === "habit") {
+      body.up = true;
+      body.down = false;
+    }
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/user`, {
+        method: "POST",
+        headers: this.headers,
+        body: JSON.stringify(body)
+      });
+      return this._parseResponse(res, "createTask");
+    }, "createTask");
+  }
+  /**
+   * Creates a new tag in Habitica. Calls `POST /api/v3/tags`.
+   * @returns The newly created tag, including the server-assigned `id`.
+   */
+  async createTag(name) {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tags`, {
+        method: "POST",
+        headers: this.headers,
+        body: JSON.stringify({ name })
+      });
+      return this._parseResponse(res, "createTag");
+    }, "createTag");
+  }
+  /**
+   * Adds a checklist item to an existing task. Calls `POST /api/v3/tasks/:taskId/checklist`.
+   * @returns The updated parent task with the full `checklist` array.
+   */
+  async addChecklistItem(taskId, text) {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${taskId}/checklist`, {
+        method: "POST",
+        headers: this.headers,
+        body: JSON.stringify({ text })
+      }, 2);
+      return this._parseResponse(res, `addChecklistItem/${taskId}`);
+    }, "addChecklistItem");
+  }
+  /**
+   * Scores a checklist item. Calls `POST /api/v3/tasks/:taskId/checklist/:itemId/score`.
+   * @returns The updated parent task with the checklist item marked completed.
+   */
+  async scoreChecklistItem(taskId, itemId) {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${taskId}/checklist/${itemId}/score`, {
+        method: "POST",
+        headers: this.headers
+      }, 2);
+      return this._parseResponse(res, `scoreChecklistItem/${taskId}/${itemId}`);
+    }, "scoreChecklistItem");
+  }
+  /**
+   * Updates a checklist item's text. Calls `PUT /api/v3/tasks/:taskId/checklist/:itemId`.
+   * @returns The updated parent task with the full `checklist` array.
+   */
+  async updateChecklistItem(taskId, itemId, text) {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${taskId}/checklist/${itemId}`, {
+        method: "PUT",
+        headers: this.headers,
+        body: JSON.stringify({ text })
+      }, 2);
+      return this._parseResponse(res, `updateChecklistItem/${taskId}/${itemId}`);
+    }, "updateChecklistItem");
+  }
+  /**
+   * Deletes a checklist item. Calls `DELETE /api/v3/tasks/:taskId/checklist/:itemId`.
+   * Idempotent — 404 on already-deleted items is caught and treated as success.
+   * @returns The updated parent task with the full `checklist` array, or `null` if the item was already deleted.
+   */
+  async deleteChecklistItem(taskId, itemId) {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${taskId}/checklist/${itemId}`, {
+        method: "DELETE",
+        headers: this.headers
+      }, 2);
+      if (res.status === 404)
+        return null;
+      return this._parseResponse(res, `deleteChecklistItem/${taskId}/${itemId}`);
+    }, "deleteChecklistItem");
+  }
+  /**
+   * Updates an existing Habitica task's fields.
+   * Calls `PUT /api/v3/tasks/:id`. Only fields that are present (not `undefined`) are sent — omitted fields are left unchanged on the server.
+   *
+   * @param id     UUID of the task to update.
+   * @param fields Partial task fields to update. `text`, `notes`, `priority`, `date`, and `tags` are supported. `type` is intentionally excluded to prevent accidental type changes.
+   * @returns The updated task from the server.
+   * @throws {Error} On network failure, HTTP error, or Habitica application error.
+   */
+  async updateTask(id, fields) {
+    const body = {};
+    for (const def of FIELD_REGISTRY) {
+      if (def.type === "sentinel" || def.type === "stringSet" || def.name === "text")
+        continue;
+      const val = fields[def.name];
+      if (val !== void 0)
+        body[def.apiKey] = val;
+    }
+    if (fields.text !== void 0)
+      body.text = fields.text;
+    if (fields.tags !== void 0)
+      body.tags = fields.tags;
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${id}`, {
+        method: "PUT",
+        headers: this.headers,
+        body: JSON.stringify(body)
+      }, 2);
+      return this._parseResponse(res, `updateTask/${id}`);
+    }, "updateTask");
+  }
+  /**
+   * Scores (completes or increments) a task in Habitica.
+   * Calls `POST /api/v3/tasks/:id/score/:direction`.
+   * @param id        UUID of the task to score.
+   * @param direction `'up'` for positive scoring; `'down'` for negative (habits only).
+   * @returns The raw score delta response (HP/XP/gold changes). Typed as `unknown` because the shape varies by task type and is not consumed by the plugin.
+   * @throws {Error} On network failure, HTTP error, or Habitica application error.
+   */
+  async scoreTask(id, direction) {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${id}/score/${direction}`, {
+        method: "POST",
+        headers: this.headers
+      });
+      return this._parseResponse(res, `scoreTask/${id}/${direction}`);
+    }, "scoreTask");
+  }
+  /**
+   * Deletes a task from Habitica. Calls `DELETE /api/v3/tasks/:id`.
+   * Idempotent — 404 on already-deleted tasks returns `null`. 401 on challenge/group tasks throws.
+   * @returns `null` if the task was already deleted (404), otherwise void.
+   * @throws {Error} On 401 (challenge/group task — cannot delete) or other HTTP errors.
+   */
+  async deleteTask(id) {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${id}`, {
+        method: "DELETE",
+        headers: this.headers
+      }, 1);
+      if (res.status === 404)
+        return null;
+      if (res.status < 200 || res.status >= 300) {
+        const body = res.json || {};
+        throw new Error(`DELETE /tasks/${id} failed: ${res.status} \u2014 ${JSON.stringify(body)}`);
+      }
+      return;
+    }, "deleteTask");
+  }
+};
+
+// src/lib/platform.ts
+function isMobilePlatform() {
+  const win = window;
+  return !!(win == null ? void 0 : win.isMobile) || !!(win == null ? void 0 : win.cordova);
+}
+function shouldAutoSync(platformSetting, isMobile) {
+  const platformMap = {
+    both: true,
+    desktop: !isMobile,
+    mobile: isMobile
+  };
+  return platformMap[platformSetting];
+}
+
+// src/settings.ts
+var import_obsidian2 = require("obsidian");
+var DEFAULT_SETTINGS = {
+  apiUser: "",
+  apiTokenSecretName: "",
+  groupId: "",
+  outputFolder: "",
+  autoSync: false,
+  autoSyncPlatform: "both",
+  syncInterval: 30,
+  disableScoring: false,
+  disableCreating: false,
+  enableVaultScan: false,
+  completionLookbackDays: 4
+};
+var SETTING_DEFS = [
+  { name: "API user", desc: "Your Habitica API user ID", key: "apiUser", control: "text", placeholder: "Enter API user" },
+  { name: "API token", desc: "Your Habitica API token, stored securely via Obsidian SecretStorage", key: "apiTokenSecretName", control: "secret" },
+  { name: "Group ID", desc: "Your Habitica group ID for shared tasks", key: "groupId", control: "text", placeholder: "Enter group ID" },
+  { name: "Output folder", desc: "Folder where habitica-fullsync.md will be saved (leave blank for vault root)", key: "outputFolder", control: "text", placeholder: "E.g., Habitica" },
+  { name: "Automatic sync", desc: "Enable automatic sync on load and every x minutes", key: "autoSync", control: "toggle" },
+  { name: "Auto sync platform", desc: "Choose which devices should run auto sync", key: "autoSyncPlatform", control: "dropdown", options: { both: "Both desktop and mobile", desktop: "Desktop only", mobile: "Mobile only" }, defaultOption: "both" },
+  { name: "Sync interval (minutes)", desc: "How often to run auto-sync when enabled", key: "syncInterval", control: "number", placeholder: "E.g., 30", errorMsg: "Sync interval must be a positive number" },
+  { name: "Disable scoring", desc: "Enable this to prevent scoring tasks in Habitica (read-only sync)", key: "disableScoring", control: "toggle" },
+  { name: "Disable creating new tasks", desc: "Enable this to prevent creating new tasks in Habitica from non-Habitica tasks completed in Obsidian", key: "disableCreating", control: "toggle" },
+  { name: "Scan vault for completed tasks", desc: "Scan all markdown files in your vault for checked-off tasks with a [completion::] field and score them in Habitica. When off, only the sync file (Habitica-fullsync.md) is checked.", key: "enableVaultScan", control: "toggle" },
+  { name: "Completion lookback (days)", desc: "How many days back to look for recently completed tasks in your vault. Defaults to 4 \u2014 covers a typical weekend gap.", key: "completionLookbackDays", control: "number", placeholder: "4", errorMsg: "Lookback must be a positive number" }
+];
+var HabiticaSyncSettingTab = class extends import_obsidian2.PluginSettingTab {
+  /**
+   * @param app    The Obsidian application instance.
+   * @param plugin The parent plugin — must satisfy `IPluginSettingsHost`.
+   */
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  /**
+   * Renders all settings controls from a single data-driven definition.
+   *
+   * Adding a setting now requires only a new entry in {@link SETTING_DEFS} — no copy-paste of the render/onChange boilerplate. The two special cases (secret component and validated number inputs) are handled inline in the render switch.
+   */
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    for (const def of SETTING_DEFS) {
+      const setting = new import_obsidian2.Setting(containerEl).setName(def.name).setDesc(def.desc);
+      const key = def.key;
+      switch (def.control) {
+        case "text":
+          setting.addText((text) => {
+            var _a, _b;
+            return text.setPlaceholder((_a = def.placeholder) != null ? _a : "").setValue(String((_b = this.plugin.settings[key]) != null ? _b : "")).onChange(async (value) => {
+              this.plugin.settings[key] = value;
+              await this.plugin.saveSettings();
+            });
+          });
+          break;
+        case "secret":
+          setting.addComponent((el) => new import_obsidian2.SecretComponent(this.app, el).setValue(String(this.plugin.settings.apiTokenSecretName)).onChange(async (value) => {
+            this.plugin.settings.apiTokenSecretName = value;
+            await this.plugin.saveSettings();
+          }));
+          break;
+        case "toggle":
+          setting.addToggle((toggle) => toggle.setValue(Boolean(this.plugin.settings[key])).onChange(async (value) => {
+            this.plugin.settings[key] = value;
+            await this.plugin.saveSettings();
+          }));
+          break;
+        case "dropdown":
+          setting.addDropdown((dropdown) => {
+            var _a, _b, _c;
+            for (const [optValue, optLabel] of Object.entries((_a = def.options) != null ? _a : {})) {
+              dropdown.addOption(optValue, optLabel);
+            }
+            dropdown.setValue(String((_c = (_b = this.plugin.settings[key]) != null ? _b : def.defaultOption) != null ? _c : "")).onChange(async (value) => {
+              this.plugin.settings[key] = value;
+              await this.plugin.saveSettings();
+            });
+          });
+          break;
+        case "number":
+          setting.addText((text) => {
+            var _a, _b;
+            return text.setPlaceholder((_a = def.placeholder) != null ? _a : "").setValue(String((_b = this.plugin.settings[key]) != null ? _b : "")).onChange(async (value) => {
+              var _a2;
+              const num = parseInt(value, 10);
+              if (!isNaN(num) && num > 0) {
+                this.plugin.settings[key] = num;
+                await this.plugin.saveSettings();
+              } else {
+                new import_obsidian2.Notice((_a2 = def.errorMsg) != null ? _a2 : "Must be a positive number");
+              }
+            });
+          });
+          break;
+      }
+    }
+  }
+};
+
+// src/sync/sync-manager.ts
+var import_obsidian3 = require("obsidian");
+
+// src/lib/dataview.ts
 function buildDataviewBlock(type, source) {
   const quoted = `"${source}"`;
-  const base = [
-    "FROM " + quoted,
-    "FLATTEN file.lists AS item"
-  ];
+  const base = ["FROM " + quoted, "FLATTEN file.lists AS item"];
   let table;
   let where;
   let sort = "";
@@ -508,6 +1238,8 @@ function buildDataviewBlock(type, source) {
       table = 'TABLE WITHOUT ID item.text AS "Reward", item.priority AS "Priority"';
       where = 'WHERE item.id AND contains(item.tags, "#reward")';
       break;
+    default:
+      return "";
   }
   const lines = ["```dataview", table, ...base, where];
   if (sort)
@@ -515,186 +1247,266 @@ function buildDataviewBlock(type, source) {
   lines.push("```");
   return lines.join("\n");
 }
-function filterActive(list, type, scoredIds) {
-  return list.filter((task) => task.type === type && !task.completed && !scoredIds.has(task.id));
-}
-function toLocaleDateStringSafe(dateInput) {
-  if (!dateInput)
-    return null;
-  const d = new Date(dateInput);
-  return isNaN(d.getTime()) ? null : d.toLocaleDateString("en-CA");
-}
-function formatTasks(taskList, tagLookup, TODAY) {
-  if (!taskList.length)
-    return ["_No tasks found._"];
-  return taskList.map((task) => formatTaskLine(task, tagLookup, TODAY));
-}
-function formatTaskLine(task, tagLookup, TODAY) {
-  var _a;
-  const status = task.completed ? "x" : " ";
-  const cleanText = task.text.replace(/^#{1,6}\s+/, "").trim();
-  const tagBodies = (Array.isArray(task.tags) ? task.tags : []).map((id) => sanitizeTag(tagLookup[id] || "unknown"));
-  const tags = [...new Set(tagBodies)].map((body) => `#${body}`);
-  if (task.type === "daily")
-    tags.push("#daily");
-  if (task.type === "habit")
-    tags.push("#habit");
-  if (task.type === "reward")
-    tags.push("#reward");
-  const priorityMap = { "2": "high", "1.5": "medium", "1": "low", "0.1": "lowest" };
-  const priority = priorityMap[String(task.priority)] || "Unknown";
-  let line = `- [${status}] ${cleanText} ${tags.join(" ")} [id:: ${task.id}] [priority:: ${priority}]`;
-  const dueDateStr = toLocaleDateStringSafe(task.date);
-  if (task.type === "todo" && dueDateStr) {
-    line += ` [due:: ${dueDateStr}]`;
-  }
-  if (task.type === "daily") {
-    const dueDate = getNextDailyDueDate(task);
-    if (dueDate)
-      line += ` [due:: ${dueDate}]`;
-  }
-  if (task.completed && task.type !== "habit") {
-    line += ` [completion:: ${TODAY}]`;
-  }
-  const blocks = [line];
-  const notesRaw = task.notes != null ? String(task.notes) : "";
-  if (notesRaw.trim()) {
-    const segments = notesRaw.split(/[\r\n]+/).map((s) => s.replace(/^#{1,6}\s+/, "").trim()).filter((s) => s.length > 0);
-    if (segments.length > 0) {
-      blocks.push("  > [!note]");
-      for (const seg of segments)
-        blocks.push(`  > ${seg}`);
-    }
-  }
-  const checklist = Array.isArray(task.checklist) ? task.checklist : [];
-  for (const item of checklist) {
-    const itemText = String((_a = item.text) != null ? _a : "").replace(/^#{1,6}\s+/, "").trim();
-    if (!itemText)
+
+// src/markdown/scanner.ts
+var CHECK_RE = /^\s{2,}[+\-*] \[[ xX]\] (.*)$/;
+var NOTE_RE = /^\s{2,}> (.*)$/;
+function readChecklistItemBlock(lines, lineIndex) {
+  var _a, _b, _c, _d, _e, _f;
+  const match = lines[lineIndex].match(CHECK_RE);
+  if (!match)
+    return { item: null, endIndex: lineIndex + 1 };
+  let text = stripScoredMarker(match[1]).trim();
+  const checked = /^\s{2,}[+\-*] \[[xX]\]/.test(lines[lineIndex]);
+  const subId = extractSubId(lines[lineIndex]);
+  const checklistIndent = (_b = (_a = lines[lineIndex].match(/^(\s*)/)) == null ? void 0 : _a[1].length) != null ? _b : 0;
+  const continuationMin = checklistIndent + 2;
+  let peek = lineIndex + 1;
+  const continuationLines = [];
+  while (peek < lines.length) {
+    const peekLine = lines[peek];
+    const peekIndent = (_d = (_c = peekLine.match(/^(\s*)/)) == null ? void 0 : _c[1].length) != null ? _d : 0;
+    if (CHECK_RE.test(peekLine) || NOTE_RE.test(peekLine))
+      break;
+    if (peekIndent >= continuationMin && peekLine.trim() !== "") {
+      continuationLines.push(peekLine.slice(continuationMin));
+      peek++;
       continue;
-    blocks.push(`  - [${item.completed ? "x" : " "}] ${itemText}`);
-  }
-  return blocks.join("\n");
-}
-function getNextDailyDueDate(task) {
-  try {
-    const start = new Date(task.startDate);
-    if (isNaN(start.getTime()))
-      return null;
-    const today = new Date();
-    const freq = task.frequency;
-    const everyX = task.everyX || 1;
-    const baseDate = start > today ? new Date(start) : new Date(today);
-    if (freq === "daily") {
-      const startMs = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-      const todayMs = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
-      if (todayMs < startMs) {
-        return start.toLocaleDateString("en-CA");
+    }
+    if (peekLine.trim() === "") {
+      let lookahead = peek + 1;
+      while (lookahead < lines.length && lines[lookahead].trim() === "")
+        lookahead++;
+      if (lookahead < lines.length && ((_f = (_e = lines[lookahead].match(/^(\s*)/)) == null ? void 0 : _e[1].length) != null ? _f : 0) >= continuationMin && lines[lookahead].trim() !== "") {
+        continuationLines.push("");
+        peek++;
+        continue;
       }
-      const dayMs = 24 * 60 * 60 * 1e3;
-      const daysSinceStart = Math.round((todayMs - startMs) / dayMs);
-      const remainder = daysSinceStart % everyX;
-      const daysUntilNext = remainder === 0 ? 0 : everyX - remainder;
-      const nextMs = todayMs + daysUntilNext * dayMs;
-      const next = new Date(nextMs);
-      return next.toLocaleDateString("en-CA");
+      break;
     }
-    if (freq === "weekly" && task.repeat) {
-      const repeatDays = task.repeat;
-      const weekdayKeys = ["su", "m", "t", "w", "th", "f", "s"];
-      for (let i = 0; i < 30; i++) {
-        const check = new Date(baseDate);
-        check.setDate(baseDate.getDate() + i);
-        const key = weekdayKeys[check.getDay()];
-        if (repeatDays[key] && check >= start) {
-          return check.toLocaleDateString("en-CA");
-        }
-      }
-    }
-    return null;
-  } catch (err) {
-    console.error("habitica-fullsync helpers.getNextDailyDueDate: error calculating daily due date:", err);
-    return null;
+    break;
   }
-}
-function sectionToType(section) {
-  switch (section.trim().toLowerCase()) {
-    case "dailies":
-      return "daily";
-    case "habits":
-      return "habit";
-    case "rewards":
-      return "reward";
-    case "to-dos":
-    case "todos":
-    case "to dos":
-      return "todo";
-    default:
-      return "todo";
+  if (continuationLines.length > 0) {
+    text = text + "\n" + continuationLines.join("\n");
   }
-}
-function isValidDateString(s) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s))
-    return false;
-  const d = new Date(`${s}T00:00:00Z`);
-  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
-}
-function parseTaskLine(line, section, reverseIndex, notes, checklistTexts) {
-  const type = sectionToType(section);
-  let rest = line.replace(/^- \[ \]\s*/, "");
-  let priority;
-  const priorityMatch = rest.match(/\[priority:: (high|medium|low|lowest)\]/i);
-  if (priorityMatch) {
-    const map = { high: 2, medium: 1.5, low: 1, lowest: 0.1 };
-    priority = map[priorityMatch[1].toLowerCase()];
-  }
-  let date;
-  let startDate;
-  let frequency;
-  const dueMatch = rest.match(/\[due:: (\d{4}-\d{2}-\d{2})\]/);
-  if (dueMatch && isValidDateString(dueMatch[1])) {
-    if (type === "todo")
-      date = dueMatch[1];
-    else if (type === "daily") {
-      startDate = dueMatch[1];
-      frequency = "daily";
-    }
-  } else if (type === "daily") {
-    frequency = "daily";
-  }
-  const tagIds = [];
-  const newTagNames = [];
-  const seenTagKeys = /* @__PURE__ */ new Set();
-  const tagMatches = rest.match(/#[\p{L}\p{N}_\-/]+/gu) || [];
-  for (const tag of tagMatches) {
-    const body = tag.slice(1);
-    const key = normalizeTagKey(body);
-    if (RESERVED_TYPE_TAGS.has(key))
-      continue;
-    if (seenTagKeys.has(key))
-      continue;
-    seenTagKeys.add(key);
-    const existingId = reverseIndex[key];
-    if (existingId)
-      tagIds.push(existingId);
-    else
-      newTagNames.push(body.replace(/-/g, " "));
-  }
-  const text = rest.replace(/\[[a-zA-Z]+:: [^\]]*\]/g, "").replace(/#[\p{L}\p{N}_\-/]+/gu, "").replace(/%%scored%%/g, "").replace(/\s{2,}/g, " ").trim();
   return {
-    text,
-    type,
-    priority,
-    date,
-    startDate,
-    frequency,
-    tagIds,
-    newTagNames,
-    notes: notes.trim() ? notes.trim() : void 0,
-    checklistTexts
+    item: text ? { text, checked, subId } : null,
+    endIndex: peek
   };
 }
+function scanNestedContent(lines, startIndex) {
+  var _a, _b;
+  const noteSegs = [];
+  const checklistItems = [];
+  let j = startIndex;
+  for (; j < lines.length; j++) {
+    const currentIndent = (_b = (_a = lines[j].match(/^(\s*)/)) == null ? void 0 : _a[1].length) != null ? _b : 0;
+    if (currentIndent === 0)
+      break;
+    const noteMatch = lines[j].match(NOTE_RE);
+    if (noteMatch) {
+      const seg = noteMatch[1].trim();
+      if (seg && !/^\[!/.test(seg))
+        noteSegs.push(seg);
+      continue;
+    }
+    if (CHECK_RE.test(lines[j])) {
+      const { item, endIndex } = readChecklistItemBlock(lines, j);
+      if (item)
+        checklistItems.push(item);
+      j = endIndex - 1;
+      continue;
+    }
+    break;
+  }
+  return { notes: noteSegs.join("\n"), checklistItems, endIndex: j };
+}
 
-// src/sync-manager.ts
+// src/sync/sync-file-model.ts
+function parseSyncFile(content) {
+  const lines = content.split("\n");
+  const entries = [];
+  let section = "";
+  let inGroupSubsection = false;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const h2Match = raw.match(/^## (.+)$/);
+    if (h2Match) {
+      section = h2Match[1].trim();
+      inGroupSubsection = false;
+      continue;
+    }
+    if (/^### /.test(raw)) {
+      inGroupSubsection = true;
+      continue;
+    }
+    if (!/^- \[[ xX]\] /.test(raw))
+      continue;
+    if (raw.includes("_No tasks found._"))
+      continue;
+    const id = extractId(raw);
+    const scored = hasScoredMarker(raw);
+    if (scored)
+      continue;
+    const checked = /^- \[[xX]\]/.test(raw);
+    const isGroupTask = inGroupSubsection;
+    let kind;
+    if (checked && id) {
+      kind = "checked";
+    } else if (!id && !checked && !isGroupTask) {
+      kind = "creatable";
+    } else if (id && !isGroupTask) {
+      kind = "managed";
+    } else {
+      continue;
+    }
+    const nested = scanNestedContent(lines, i + 1);
+    entries.push({
+      lineNumber: i,
+      raw,
+      kind,
+      section,
+      inGroupSubsection: false,
+      // group-task lines are skipped above via isGroupTask — this field is always false in output
+      id,
+      notes: nested.notes,
+      checklistItems: nested.checklistItems
+    });
+    i = nested.endIndex - 1;
+  }
+  return entries;
+}
+
+// src/sync/task-registry.ts
+var TaskRegistry = class {
+  constructor() {
+    __publicField(this, "_personal", []);
+    __publicField(this, "_group", []);
+  }
+  // -- setters (called once per sync in _fetchFromHabitica) --
+  set personal(tasks) {
+    this._personal = tasks;
+  }
+  set group(tasks) {
+    this._group = tasks;
+  }
+  // -- getters (used by _renderAndWrite and callers that need filtered lists) --
+  get personal() {
+    return this._personal;
+  }
+  get group() {
+    return this._group;
+  }
+  /** Derived view — no stored shallow concat. */
+  get all() {
+    return [...this._personal, ...this._group];
+  }
+  // -- lookup --
+  /** Returns both personal and group matches for a task ID. Used internally by findById, updateChecklist, and updateInPlace to avoid the duplicated personal-then-group search pattern. */
+  _findBoth(taskId) {
+    return {
+      personal: this._personal.find((t) => t.id === taskId),
+      group: this._group.find((t) => t.id === taskId)
+    };
+  }
+  /** Finds a task by Habitica UUID, checking personal tasks first, then group. */
+  findById(id) {
+    var _a;
+    const found = this._findBoth(id);
+    return (_a = found.personal) != null ? _a : found.group;
+  }
+  // -- mutations --
+  /** Appends a newly created personal task (used by _createNewTasks). */
+  pushCreated(task) {
+    this._personal.push(task);
+  }
+  /** Updates the checklist array for a task in either personal or group. */
+  updateChecklist(taskId, checklist) {
+    const found = this._findBoth(taskId);
+    if (found.personal) {
+      found.personal.checklist = checklist;
+      return;
+    }
+    if (found.group)
+      found.group.checklist = checklist;
+  }
+  /**
+   * Applies a full API response (`updated`) to the in-memory task, optionally
+   * preserving a known-good checklist. Returns `true` if the task was found.
+   */
+  updateInPlace(taskId, updated, checklist) {
+    var _a;
+    const found = this._findBoth(taskId);
+    const target = (_a = found.personal) != null ? _a : found.group;
+    if (!target)
+      return false;
+    Object.assign(target, updated);
+    if (checklist)
+      target.checklist = checklist;
+    return true;
+  }
+  /** Removes a task by id from both personal and group arrays. Returns `true` if a task was removed. */
+  remove(taskId) {
+    const personalIdx = this._personal.findIndex((t) => t.id === taskId);
+    if (personalIdx !== -1) {
+      this._personal.splice(personalIdx, 1);
+      return true;
+    }
+    const groupIdx = this._group.findIndex((t) => t.id === taskId);
+    if (groupIdx !== -1) {
+      this._group.splice(groupIdx, 1);
+      return true;
+    }
+    return false;
+  }
+};
+
+// src/sync/sync-report.ts
+var SyncReport = class {
+  constructor() {
+    __publicField(this, "createdCount", 0);
+    __publicField(this, "createFailures", 0);
+    __publicField(this, "updatedCount", 0);
+    __publicField(this, "checklistAddedCount", 0);
+    __publicField(this, "checklistScoredCount", 0);
+    __publicField(this, "checklistUpdatedCount", 0);
+    __publicField(this, "checklistDeletedCount", 0);
+    __publicField(this, "deletedCount", 0);
+    __publicField(this, "skippedDeletions", 0);
+    __publicField(this, "scoreFailures", 0);
+    __publicField(this, "skippedSections", /* @__PURE__ */ new Set());
+  }
+  /** Builds the one-line summary notice shown after sync. */
+  renderSummary(config) {
+    const p = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const parts = [
+      [this.createdCount, "created task"],
+      [this.createFailures, "create failure", " (see console)"],
+      [this.updatedCount, "updated task"],
+      [this.checklistAddedCount, "added checklist item"],
+      [this.checklistScoredCount, "scored checklist item"],
+      [this.checklistUpdatedCount, "updated checklist item"],
+      [this.checklistDeletedCount, "deleted checklist item"],
+      [this.deletedCount, "deleted task"],
+      [this.skippedDeletions, "skipped deletion", " (challenge/group tasks)"],
+      [this.scoreFailures, "scoring failure", " (see console)"]
+    ];
+    const fragments = [];
+    for (const [count, label, suffix] of parts) {
+      if (count <= 0)
+        continue;
+      fragments.push(`${p(count, label)}${suffix != null ? suffix : ""}`);
+    }
+    let result = fragments.join(" \u2014 ");
+    if (this.skippedSections.size > 0) {
+      const names = [...this.skippedSections].join(", ");
+      result += `${result ? " \u2014 " : ""}skipped unknown section${this.skippedSections.size === 1 ? "" : "s"}: ${names}`;
+    }
+    return `\u2705 Habitica sync complete: ${config.filePath}${result ? ` \u2014 ${result}` : ""}`;
+  }
+};
+
+// src/sync/sync-manager.ts
 var SyncManager = class {
   /**
    * @param apiClient    Configured Habitica API client.
@@ -703,6 +1515,14 @@ var SyncManager = class {
    * @param noticeFn     Callback that displays a user-facing notice (e.g. `msg => new Notice(msg)`).
    */
   constructor(apiClient, vaultHandler, settings, noticeFn) {
+    __publicField(this, "apiClient");
+    __publicField(this, "vaultHandler");
+    __publicField(this, "settings");
+    __publicField(this, "noticeFn");
+    /** Mutex flag — `true` while a sync is running; prevents concurrent invocations. */
+    __publicField(this, "_syncInFlight");
+    /** Timestamp (ms) of the last sync's completion — used by {@link preSyncDelay} guard. */
+    __publicField(this, "_lastSyncEndTime", 0);
     this.apiClient = apiClient;
     this.vaultHandler = vaultHandler;
     this.settings = settings;
@@ -710,375 +1530,787 @@ var SyncManager = class {
     this._syncInFlight = false;
   }
   /**
-   * Runs a full Habitica ↔ Obsidian sync.
+   * Runs a full Habitica ↔ Obsidian sync as a sequence of isolated steps. `_fetchFromHabitica` failure aborts the run; the mutation steps (`_scoreCompletedTasks`, `_createNewTasks`, `_syncManagedTasks`) each have their own error boundary so one failure cannot prevent output regeneration.
    *
-   * **Concurrency:** Returns immediately if `_syncInFlight` is already `true`. The flag is
-   * reset in `finally` so a thrown error never permanently locks out future syncs.
+   * @param options.allowUpdates When `true`, checklist changes and task field changes in the markdown are pushed to Habitica. Defaults to `false` so auto-sync is fetch + render only.
    *
-   * **Sync steps (in order):**
-   * 1. Fetch user tasks, tags, and (if configured) group tasks from Habitica.
-   * 2. Pre-pass: scan the sync output file for `todo`/`daily` tasks the user checked off
-   *    directly in Obsidian. Score those in Habitica and add to `scoredIds`.
-   *    (Habits and rewards are skipped here — habits don't become `completed: true` after
-   *    scoring, so they would re-score on every sync until the file is regenerated.)
-   * 3. General vault scan: find tasks completed in the last 4 days that have a
-   *    `[completion:: YYYY-MM-DD]` field and no `%%scored%%` marker. Score them, write
-   *    `%%scored%%` back to the vault line. IDs already in `scoredIds` are skipped.
-   * 4. For completed tasks without an ID (and `disableCreating === false`): create a new
-   *    Habitica to-do, score it, and write the assigned ID back to the vault line.
-   * 5. Build a Markdown output document grouped by task type and source.
-   * 6. Write the document to `outputFolder/habitica-fullsync.md`.
-   * 7. Show a success or failure notice.
    */
-  async sync() {
-    var _a, _b;
+  /** @returns 'completed' when sync ran, 'skipped-in-flight' when another sync is running, 'skipped-cooldown' when within the minimum gap. */
+  async sync(options) {
+    var _a;
     if (this._syncInFlight) {
       console.warn("habitica-fullsync SyncManager.sync: sync already in progress, skipping.");
-      return;
+      return "skipped-in-flight";
+    }
+    const MIN_SYNC_GAP_MS = 12e4;
+    const elapsed = Date.now() - this._lastSyncEndTime;
+    if (this._lastSyncEndTime > 0 && elapsed < MIN_SYNC_GAP_MS) {
+      console.warn(`habitica-fullsync SyncManager.sync: skipping \u2014 last sync ended ${Math.round(elapsed / 1e3)}s ago (minimum gap: ${MIN_SYNC_GAP_MS / 1e3}s).`);
+      return "skipped-cooldown";
     }
     this._syncInFlight = true;
-    const { groupId, outputFolder, disableScoring, disableCreating } = this.settings;
-    const TODAY = new Date().toLocaleDateString("en-CA");
+    const syncWallStart = Date.now();
+    this.apiClient.setSyncStartTime();
+    this.apiClient.resetSyncStats();
     const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - 4);
-    const filePath = outputFolder ? `${outputFolder}/habitica-fullsync.md` : "habitica-fullsync.md";
+    cutoffDate.setDate(cutoffDate.getDate() - this.settings.completionLookbackDays);
+    const config = {
+      allowUpdates: (_a = options == null ? void 0 : options.allowUpdates) != null ? _a : false,
+      disableScoring: this.settings.disableScoring,
+      disableCreating: this.settings.disableCreating,
+      enableVaultScan: this.settings.enableVaultScan,
+      completionLookbackDays: this.settings.completionLookbackDays,
+      outputFolder: this.settings.outputFolder,
+      groupId: this.settings.groupId,
+      TODAY: new Date().toLocaleDateString("en-CA"),
+      cutoffDate,
+      filePath: this.settings.outputFolder ? (0, import_obsidian3.normalizePath)(`${this.settings.outputFolder}/habitica-fullsync.md`) : "habitica-fullsync.md"
+    };
+    const registry = new TaskRegistry();
+    const report = new SyncReport();
+    const ctx = {
+      config,
+      registry,
+      report,
+      tagLookup: {},
+      scoredIds: /* @__PURE__ */ new Set()
+    };
     try {
-      const rawTasks = await this.apiClient.fetchUserTasks();
-      const tasks = Array.isArray(rawTasks) ? rawTasks : [];
-      const tags = await this.apiClient.fetchTags();
-      const rawTags = Array.isArray(tags) ? tags : [];
-      const tagLookup = Object.fromEntries(rawTags.map((tag) => [tag.id, tag.name]));
-      let groupTasks = [];
-      if (groupId) {
-        try {
-          const rawGroupTasks = await this.apiClient.fetchGroupTasks(groupId);
-          groupTasks = Array.isArray(rawGroupTasks) ? rawGroupTasks : [];
-        } catch (err) {
-          console.error("habitica-fullsync SyncManager.sync: failed to fetch group tasks:", err);
-        }
-      }
-      const allTasks = [...tasks, ...groupTasks];
-      const scoredIds = /* @__PURE__ */ new Set();
-      if (!disableScoring) {
-        const syncFileChecked = await this.vaultHandler.getCheckedTasksFromFile(filePath);
-        for (const { id } of syncFileChecked) {
-          const habiticaTask = allTasks.find((t) => t.id === id);
-          if (!habiticaTask || habiticaTask.completed)
-            continue;
-          if (habiticaTask.type !== "todo" && habiticaTask.type !== "daily")
-            continue;
-          try {
-            await this.apiClient.scoreTask(id, "up");
-            scoredIds.add(id);
-          } catch (err) {
-            console.error(`habitica-fullsync SyncManager.sync: failed to score sync-file task ${id}:`, err);
-          }
-        }
-        const completedTasks = await this.vaultHandler.getRecentCompletedTasks(cutoffDate);
-        for (const task of completedTasks) {
-          const match = task.line.match(/\[id:: ([^\]]+)\]/);
-          if (match) {
-            const id = match[1];
-            if (scoredIds.has(id))
-              continue;
-            const habiticaTask = allTasks.find((t) => t.id === id);
-            if (!habiticaTask || habiticaTask.completed)
-              continue;
-            let direction = "up";
-            if (habiticaTask.type === "habit") {
-              direction = habiticaTask.up ? "up" : habiticaTask.down ? "down" : "up";
-            }
-            try {
-              await this.apiClient.scoreTask(id, direction);
-              scoredIds.add(id);
-              await this.vaultHandler.updateLine(task.file, task.line + " %%scored%%");
-            } catch (err) {
-              console.error(`habitica-fullsync SyncManager.sync: failed to score vault task ${id}:`, err);
-            }
-          } else if (!disableCreating) {
-            const text = task.line.replace(/^- \[x\]\s*/, "").split(" [")[0];
-            try {
-              const newTask = await this.apiClient.createTask({ text, type: "todo" });
-              await this.apiClient.scoreTask(newTask.id, "up");
-              scoredIds.add(newTask.id);
-              const newLine = task.line + ` [id:: ${newTask.id}] %%scored%%`;
-              await this.vaultHandler.updateLine(task.file, newLine);
-            } catch (err) {
-              console.error("habitica-fullsync SyncManager.sync: failed to create and score new task:", err);
-            }
-          }
-        }
-      }
-      let createdCount = 0;
-      let createFailures = 0;
-      if (!disableCreating) {
-        const reverseIndex = buildTagReverseIndex(tagLookup);
-        const creatable = await this.vaultHandler.getCreatableLinesFromFile(filePath);
-        for (const item of creatable) {
-          try {
-            const input = parseTaskLine(item.line, item.section, reverseIndex, item.notes, item.checklistTexts);
-            if (!input.text) {
-              console.warn(`habitica-fullsync SyncManager.sync: skipping creatable line with empty title: ${item.line}`);
-              continue;
-            }
-            for (const name of input.newTagNames) {
-              try {
-                const tag = await this.apiClient.createTag(name);
-                tagLookup[tag.id] = tag.name;
-                reverseIndex[normalizeTagKey(tag.name)] = tag.id;
-                input.tagIds.push(tag.id);
-              } catch (err) {
-                console.error(`habitica-fullsync SyncManager.sync: failed to create tag "${name}":`, err);
-              }
-            }
-            const created = await this.apiClient.createTask({
-              text: input.text,
-              type: input.type,
-              priority: input.priority,
-              date: input.date,
-              startDate: input.startDate,
-              frequency: input.frequency,
-              tags: input.tagIds,
-              notes: input.notes
-            });
-            let checklist = Array.isArray(created.checklist) ? created.checklist : [];
-            for (const ctext of input.checklistTexts) {
-              try {
-                const updated = await this.apiClient.addChecklistItem(created.id, ctext);
-                if (Array.isArray(updated.checklist))
-                  checklist = updated.checklist;
-              } catch (err) {
-                console.error(`habitica-fullsync SyncManager.sync: failed to add checklist item to ${created.id}:`, err);
-              }
-            }
-            const merged = {
-              ...created,
-              tags: Array.isArray(created.tags) ? created.tags : input.tagIds,
-              notes: (_b = (_a = created.notes) != null ? _a : input.notes) != null ? _b : null,
-              checklist
-            };
-            tasks.push(merged);
-            await this.vaultHandler.updateLineInFile(filePath, item.line, `${item.line} [id:: ${created.id}]`);
-            createdCount++;
-          } catch (err) {
-            createFailures++;
-            console.error(`habitica-fullsync SyncManager.sync: failed to create task from line "${item.line}":`, err);
-          }
-        }
-      }
-      const dailiesPersonal = filterActive(tasks, "daily", scoredIds);
-      const todosPersonal = filterActive(tasks, "todo", scoredIds);
-      const rewardsPersonal = filterActive(tasks, "reward", scoredIds);
-      const habitsPersonal = filterActive(tasks, "habit", scoredIds);
-      const dailiesGroup = filterActive(groupTasks, "daily", scoredIds);
-      const todosGroup = filterActive(groupTasks, "todo", scoredIds);
-      const rewardsGroup = filterActive(groupTasks, "reward", scoredIds);
-      const habitsGroup = filterActive(groupTasks, "habit", scoredIds);
-      const totalRendered = dailiesPersonal.length + dailiesGroup.length + todosPersonal.length + todosGroup.length + rewardsPersonal.length + rewardsGroup.length + habitsPersonal.length + habitsGroup.length;
-      const breakdown = [
-        `${dailiesPersonal.length + dailiesGroup.length} dailies`,
-        `${todosPersonal.length + todosGroup.length} to-dos`,
-        `${rewardsPersonal.length + rewardsGroup.length} rewards`,
-        `${habitsPersonal.length + habitsGroup.length} habits`
-      ].join(" \xB7 ");
-      const output = [
-        `## Habitica Sync \u2014 ${TODAY}`,
-        `*${totalRendered} active tasks: ${breakdown}*`,
-        ``
-      ];
-      const dataviewSource = outputFolder ? `${outputFolder}/habitica-fullsync` : "habitica-fullsync";
-      const writeSection = (title, type, personal, group) => {
-        output.push(`### ${title}`);
-        output.push(...formatTasks(personal, tagLookup, TODAY));
-        if (groupId) {
-          output.push("");
-          output.push("#### Group Tasks");
-          output.push(...formatTasks(group, tagLookup, TODAY));
-        }
-        output.push("");
-        output.push(buildDataviewBlock(type, dataviewSource));
-        output.push("");
-      };
-      writeSection("Dailies", "daily", dailiesPersonal, dailiesGroup);
-      writeSection("To-Dos", "todo", todosPersonal, todosGroup);
-      writeSection("Rewards", "reward", rewardsPersonal, rewardsGroup);
-      writeSection("Habits", "habit", habitsPersonal, habitsGroup);
-      await this.vaultHandler.ensureFolder(outputFolder);
-      await this.vaultHandler.writeFile(filePath, output.join("\n"));
-      let createSummary = "";
-      if (createdCount > 0)
-        createSummary += ` \u2014 created ${createdCount} task${createdCount === 1 ? "" : "s"}`;
-      if (createFailures > 0)
-        createSummary += `, ${createFailures} failed (see console)`;
-      this.noticeFn(`\u2705 Habitica sync complete: ${filePath}${createSummary}`);
+      const debug = this.apiClient.isDebugEnabled;
+      const syncFileEntries = parseSyncFile(
+        await this.vaultHandler.readFileContent(config.filePath)
+      );
+      await this._timedStep("[hf:step] full-sync", debug, async () => {
+        await this._timedStep("[hf:step]  1-fetch", debug, () => this._fetchFromHabitica(ctx));
+        await this._timedStep("[hf:step]  2-score-completed", debug, () => this._scoreCompletedTasks(ctx, syncFileEntries));
+        await this._timedStep("[hf:step]  3-create-new", debug, () => this._createNewTasks(ctx, syncFileEntries));
+        await this._timedStep("[hf:step]  4-sync-managed", debug, () => this._syncManagedTasks(ctx, syncFileEntries));
+        await this._timedStep("[hf:step]  5-render-write", debug, () => this._renderAndWrite(ctx));
+      });
+      this.noticeFn(report.renderSummary(config));
     } catch (err) {
       console.error("habitica-fullsync SyncManager.sync:", err);
       this.noticeFn("\u274C Habitica sync failed. Check console for details.");
     } finally {
+      if (this.apiClient.isDebugEnabled) {
+        this._logSyncSummary(this.apiClient.getSyncStats(), Date.now() - syncWallStart);
+      }
       this._syncInFlight = false;
+      this._lastSyncEndTime = Date.now();
     }
+    return "completed";
+  }
+  /** Wraps an async step with console.time/timeEnd when debug is enabled. Uses try/finally so the timer always closes. */
+  async _timedStep(label, debug, fn) {
+    if (!debug)
+      return fn();
+    console.time(label);
+    try {
+      return await fn();
+    } finally {
+      console.timeEnd(label);
+    }
+  }
+  /** Logs the per-sync API call summary at console.debug level. */
+  _logSyncSummary(stats, wallMs) {
+    const syncSec = (wallMs / 1e3).toFixed(1);
+    const rate = stats.totalCalls > 0 ? (stats.totalCalls / Math.max(parseFloat(syncSec), 1)).toFixed(1) : "0.0";
+    const breakdown = Object.entries(stats.byOperation).sort(([, a], [, b]) => b - a).map(([op, n]) => `${op}:${n}`).join(" ");
+    console.debug(
+      `[hf:summary] API calls: ${stats.totalCalls} | 429s: ${stats.rateLimitedCalls} | time: ${syncSec}s | rate: ${rate}/s | ops: { ${breakdown} }`
+    );
+  }
+  /** Step 1: fetch user tasks, tags, and (if configured) group tasks. */
+  async _fetchFromHabitica(ctx) {
+    const rawTasks = await this.apiClient.fetchUserTasks();
+    ctx.registry.personal = Array.isArray(rawTasks) ? rawTasks : [];
+    const tags = await this.apiClient.fetchTags();
+    const rawTags = Array.isArray(tags) ? tags : [];
+    ctx.tagLookup = Object.fromEntries(rawTags.map((tag) => [tag.id, tag.name]));
+    if (ctx.config.groupId) {
+      try {
+        const rawGroupTasks = await this.apiClient.fetchGroupTasks(ctx.config.groupId);
+        ctx.registry.group = Array.isArray(rawGroupTasks) ? rawGroupTasks : [];
+      } catch (err) {
+        console.error("habitica-fullsync SyncManager._fetchFromHabitica: failed to fetch group tasks:", err);
+        this.noticeFn("\u26A0\uFE0F Failed to fetch group tasks \u2014 sync continuing without them. Check console for details.");
+      }
+    }
+  }
+  /** Step 2: score sync-file checkboxes, then (opt-in) recently completed vault tasks. */
+  async _scoreCompletedTasks(ctx, entries) {
+    if (ctx.config.disableScoring)
+      return;
+    try {
+      const syncFileChecked = entries.filter((e) => e.kind === "checked" && e.id);
+      for (const { id } of syncFileChecked) {
+        if (!id)
+          continue;
+        const habiticaTask = ctx.registry.findById(id);
+        if (!habiticaTask || habiticaTask.completed)
+          continue;
+        if (habiticaTask.type !== "todo" && habiticaTask.type !== "daily")
+          continue;
+        try {
+          await this.apiClient.scoreTask(id, "up");
+          ctx.scoredIds.add(id);
+          habiticaTask.completed = true;
+        } catch (err) {
+          ctx.report.scoreFailures++;
+          console.error(`habitica-fullsync SyncManager._scoreCompletedTasks: failed to score sync-file task ${id}:`, err);
+        }
+      }
+      const completedTasks = ctx.config.enableVaultScan ? await this.vaultHandler.getRecentCompletedTasks(ctx.config.cutoffDate, ctx.config.filePath) : [];
+      for (const task of completedTasks) {
+        const id = extractId(task.line);
+        if (id) {
+          if (ctx.scoredIds.has(id))
+            continue;
+          const habiticaTask = ctx.registry.findById(id);
+          if (!habiticaTask || habiticaTask.completed)
+            continue;
+          let direction = "up";
+          if (habiticaTask.type === "habit") {
+            direction = habiticaTask.up ? "up" : habiticaTask.down ? "down" : "up";
+          }
+          try {
+            await this.apiClient.scoreTask(id, direction);
+            ctx.scoredIds.add(id);
+            habiticaTask.completed = true;
+            await this.vaultHandler.updateLine(task.file, task.lineNumber, task.line, task.line + " %%scored%%");
+          } catch (err) {
+            ctx.report.scoreFailures++;
+            console.error(`habitica-fullsync SyncManager._scoreCompletedTasks: failed to score vault task ${id}:`, err);
+          }
+        } else if (!ctx.config.disableCreating) {
+          const text = cleanTitle(task.line.replace(/^- \[x\]\s*/, ""));
+          try {
+            const newTask = await this.apiClient.createTask({ text, type: "todo" });
+            const lineWithId = task.line + ` [id:: ${newTask.id}]`;
+            await this.vaultHandler.updateLine(task.file, task.lineNumber, task.line, lineWithId);
+            try {
+              await this.apiClient.scoreTask(newTask.id, "up");
+              ctx.scoredIds.add(newTask.id);
+              await this.vaultHandler.updateLine(task.file, task.lineNumber, lineWithId, lineWithId + " %%scored%%");
+            } catch (scoreErr) {
+              ctx.report.scoreFailures++;
+              console.error(`habitica-fullsync SyncManager._scoreCompletedTasks: created task ${newTask.id} but failed to score \u2014 id written back, will retry next sync:`, scoreErr);
+            }
+          } catch (err) {
+            ctx.report.scoreFailures++;
+            console.error("habitica-fullsync SyncManager._scoreCompletedTasks: failed to create and score new task:", err);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("habitica-fullsync SyncManager._scoreCompletedTasks:", err);
+    }
+  }
+  /**
+   * Step 3: create Habitica tasks from hand-written `- [ ]` lines (no [id::]) in the sync file. Type is inferred from the section heading. Created tasks are pushed into `ctx.tasks` so they render with their new id, and the id is written back to the source line immediately for crash-safe idempotency.
+   */
+  async _createNewTasks(ctx, entries) {
+    var _a, _b;
+    if (ctx.config.disableCreating)
+      return;
+    try {
+      const reverseIndex = this._buildReverseIndex(ctx);
+      const creatable = entries.filter((e) => e.kind === "creatable");
+      for (const item of creatable) {
+        try {
+          const input = parseTaskLine(item.raw, item.section, reverseIndex, item.notes, item.checklistItems);
+          if (!input.text) {
+            console.warn(`habitica-fullsync SyncManager._createNewTasks: skipping creatable line with empty title (first 80 chars): "${item.raw.slice(0, 80)}${item.raw.length > 80 ? "\u2026" : ""}"`);
+            continue;
+          }
+          if (!input.type) {
+            ctx.report.skippedSections.add(item.section);
+            console.warn(`habitica-fullsync SyncManager._createNewTasks: skipping creatable line under unknown section "${item.section}" (first 80 chars): "${item.raw.slice(0, 80)}${item.raw.length > 80 ? "\u2026" : ""}"`);
+            continue;
+          }
+          const createdTags = await this._createTagsAndRegister(input.newTagNames, ctx, reverseIndex, "_createNewTasks");
+          input.tagIds.push(...createdTags);
+          const created = await this.apiClient.createTask({
+            text: input.text,
+            type: input.type,
+            priority: input.priority,
+            date: input.date,
+            startDate: input.startDate,
+            frequency: input.frequency,
+            everyX: input.everyX,
+            tags: input.tagIds,
+            notes: input.notes
+          });
+          let checklist = Array.isArray(created.checklist) ? created.checklist : [];
+          for (const ci of input.checklistItems) {
+            try {
+              const updated = await this.apiClient.addChecklistItem(created.id, ci.text);
+              if (Array.isArray(updated.checklist))
+                checklist = updated.checklist;
+            } catch (err) {
+              console.error(`habitica-fullsync SyncManager._createNewTasks: failed to add checklist item to ${created.id}:`, err);
+            }
+          }
+          const merged = {
+            ...created,
+            tags: Array.isArray(created.tags) ? created.tags : input.tagIds,
+            notes: (_b = (_a = created.notes) != null ? _a : input.notes) != null ? _b : null,
+            checklist
+          };
+          ctx.registry.pushCreated(merged);
+          try {
+            await this.vaultHandler.updateLine(ctx.config.filePath, item.lineNumber, item.raw, `${item.raw} [id:: ${created.id}]`);
+          } catch (writeErr) {
+            console.error(`habitica-fullsync SyncManager._createNewTasks: created task ${created.id} but failed to write [id::] back to the vault \u2014 next sync will DUPLICATE this task unless the id is added manually to: "${item.raw}"`, writeErr);
+            ctx.report.createFailures++;
+            continue;
+          }
+          ctx.report.createdCount++;
+        } catch (err) {
+          ctx.report.createFailures++;
+          console.error(`habitica-fullsync SyncManager._createNewTasks: failed to create task from line "${item.raw}":`, err);
+        }
+      }
+    } catch (err) {
+      console.error("habitica-fullsync SyncManager._createNewTasks:", err);
+    }
+  }
+  // ── Shared helpers (extracted from _syncManagedTasks and _renderAndWrite) ──
+  /** Builds the tag reverse index from ctx.tagLookup — shared by _createNewTasks and _syncManagedTasks. */
+  _buildReverseIndex(ctx) {
+    return buildTagReverseIndex(ctx.tagLookup);
+  }
+  /**
+   * Pure diff of parsed checklist items against the server-side checklist.
+   * Returns categorized deltas — no API calls, no side effects. Testable.
+   */
+  _diffChecklistItems(parsedItems, existingChecklist) {
+    const newItems = [];
+    const scoreItemIds = [];
+    const editItems = [];
+    for (const ci of parsedItems) {
+      if (!ci.text)
+        continue;
+      let habItem;
+      if (ci.subId) {
+        habItem = existingChecklist.find((hci) => hci.id === ci.subId);
+        if (habItem && ci.text.trim() !== habItem.text.trim()) {
+          editItems.push({ itemId: habItem.id, text: ci.text });
+          continue;
+        }
+      }
+      if (!habItem) {
+        habItem = existingChecklist.find(
+          (hci) => hci.text.trim().toLowerCase() === ci.text.trim().toLowerCase()
+        );
+      }
+      if (!habItem) {
+        newItems.push(ci.text);
+      } else if (ci.checked && !habItem.completed) {
+        scoreItemIds.push(habItem.id);
+      }
+    }
+    const parsedSubIds = new Set(parsedItems.map((ci) => ci.subId).filter(Boolean));
+    const deletedItemIds = existingChecklist.filter((hci) => !parsedSubIds.has(hci.id)).map((hci) => hci.id);
+    return { newItems, scoreItemIds, editItems, deletedItemIds };
+  }
+  /**
+   * Partitions registry tasks by type into personal/group buckets.
+   * Replaces 8 individual filterActive calls in _renderAndWrite.
+   */
+  _partitionTasksByType(registry, scoredIds) {
+    const types = ["daily", "todo", "reward", "habit"];
+    const result = {};
+    for (const type of types) {
+      result[type] = {
+        personal: filterActive(registry.personal, type, scoredIds),
+        group: filterActive(registry.group, type, scoredIds)
+      };
+    }
+    return result;
+  }
+  // ── Step 4: managed-task sync ──────────────────────────────────────────
+  /**
+   * Step 4: single pass over managed task lines. Checklist changes (create/score) and field updates (text, priority, due, notes, tags) are collected in one loop and only fire when `allowUpdates` is `true`. All mutating requests are serialised by {@link HabiticaApiClient}'s internal queue with 2,200 ms spacing (matching Habitica's 30 req/min limit). Auto-sync performs no Habitica mutations here.
+   */
+  async _syncManagedTasks(ctx, entries) {
+    var _a, _b, _c;
+    try {
+      const debug = this.apiClient.isDebugEnabled;
+      const reverseIndex = this._buildReverseIndex(ctx);
+      const managed = entries.filter((e) => e.kind === "managed");
+      for (const item of managed) {
+        const parsed = parseManagedTaskLine(item.raw, item.section, reverseIndex, item.notes, item.checklistItems);
+        if (!parsed.id)
+          continue;
+        const habiticaTask = ctx.registry.findById(parsed.id);
+        if (!habiticaTask)
+          continue;
+        if (parsed.delete) {
+          const isGroupTask = ctx.registry.group.some((t) => t.id === parsed.id);
+          if (isGroupTask) {
+            console.warn(`habitica-fullsync SyncManager._syncManagedTasks: skipping deletion of group/challenge task ${parsed.id} \u2014 Habitica API returns 401 for these tasks.`);
+            ctx.report.skippedDeletions++;
+            continue;
+          }
+          if (!ctx.config.allowUpdates)
+            continue;
+          try {
+            await this.apiClient.deleteTask(parsed.id);
+            ctx.registry.remove(parsed.id);
+            ctx.report.deletedCount++;
+            if (debug)
+              console.debug(`[hf:delete] deleted task ${parsed.id}`);
+          } catch (err) {
+            if ((_a = err == null ? void 0 : err.message) == null ? void 0 : _a.includes("401")) {
+              console.warn(`habitica-fullsync SyncManager._syncManagedTasks: cannot delete task ${parsed.id} (401 \u2014 likely challenge/group task).`);
+              ctx.report.skippedDeletions++;
+            } else {
+              console.error(`habitica-fullsync SyncManager._syncManagedTasks: failed to delete task ${parsed.id}:`, err);
+            }
+          }
+          continue;
+        }
+        const existingChecklist = Array.isArray(habiticaTask.checklist) ? habiticaTask.checklist : [];
+        const diff = this._diffChecklistItems(parsed.checklistItems, existingChecklist);
+        let taskChecklistUpdated = false;
+        if (ctx.config.allowUpdates) {
+          for (const text of diff.newItems) {
+            try {
+              const updated = await this.apiClient.addChecklistItem(parsed.id, text);
+              if (Array.isArray(updated.checklist)) {
+                ctx.registry.updateChecklist(parsed.id, updated.checklist);
+                taskChecklistUpdated = true;
+              }
+              ctx.report.checklistAddedCount++;
+            } catch (err) {
+              console.error(`habitica-fullsync SyncManager._syncManagedTasks: failed to add checklist item to ${parsed.id}:`, err);
+            }
+          }
+          for (const itemId of diff.scoreItemIds) {
+            try {
+              const updated = await this.apiClient.scoreChecklistItem(parsed.id, itemId);
+              if (Array.isArray(updated.checklist)) {
+                ctx.registry.updateChecklist(parsed.id, updated.checklist);
+                taskChecklistUpdated = true;
+              }
+              ctx.report.checklistScoredCount++;
+            } catch (err) {
+              console.error(`habitica-fullsync SyncManager._syncManagedTasks: failed to score checklist item ${itemId} on task ${parsed.id}:`, err);
+            }
+          }
+          for (const { itemId, text } of diff.editItems) {
+            try {
+              const updated = await this.apiClient.updateChecklistItem(parsed.id, itemId, text);
+              if (updated && Array.isArray(updated.checklist)) {
+                ctx.registry.updateChecklist(parsed.id, updated.checklist);
+                taskChecklistUpdated = true;
+              }
+              ctx.report.checklistUpdatedCount++;
+            } catch (err) {
+              console.error(`habitica-fullsync SyncManager._syncManagedTasks: failed to update checklist item ${itemId} on task ${parsed.id}:`, err);
+            }
+          }
+          for (const itemId of diff.deletedItemIds) {
+            try {
+              const updated = await this.apiClient.deleteChecklistItem(parsed.id, itemId);
+              if (updated && Array.isArray(updated.checklist)) {
+                ctx.registry.updateChecklist(parsed.id, updated.checklist);
+                taskChecklistUpdated = true;
+              } else {
+                const filtered = existingChecklist.filter((hci) => hci.id !== itemId);
+                ctx.registry.updateChecklist(parsed.id, filtered);
+                taskChecklistUpdated = true;
+              }
+              ctx.report.checklistDeletedCount++;
+            } catch (err) {
+              console.error(`habitica-fullsync SyncManager._syncManagedTasks: failed to delete checklist item ${itemId} on task ${parsed.id}:`, err);
+            }
+          }
+        }
+        const currentChecklist = taskChecklistUpdated ? (_c = (_b = ctx.registry.findById(parsed.id)) == null ? void 0 : _b.checklist) != null ? _c : existingChecklist : existingChecklist;
+        if (!ctx.config.allowUpdates)
+          continue;
+        const updateTagIds = await this._createTagsAndRegister(parsed.newTagNames, ctx, reverseIndex, "_syncManagedTasks");
+        parsed.tagIds.push(...updateTagIds);
+        const updates = {};
+        for (const def of FIELD_REGISTRY) {
+          if (def.type === "sentinel")
+            continue;
+          const parsedKey = def.name === "tags" ? "tagIds" : def.name;
+          const parsedVal = parsed[parsedKey];
+          const habVal = habiticaTask[def.name];
+          const result = def.diff(parsedVal, habVal, habiticaTask);
+          if (result)
+            updates[result[0]] = result[1];
+        }
+        if (Object.keys(updates).length > 0) {
+          try {
+            const updated = await this.apiClient.updateTask(parsed.id, updates);
+            ctx.registry.updateInPlace(parsed.id, updated, currentChecklist.length > 0 ? currentChecklist : void 0);
+            ctx.report.updatedCount++;
+          } catch (err) {
+            console.error(`habitica-fullsync SyncManager._syncManagedTasks: failed to update task ${parsed.id}:`, err);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("habitica-fullsync SyncManager._syncManagedTasks:", err);
+    }
+  }
+  /** Step 5: filter active tasks, render the grouped Markdown document, write the output file. */
+  async _renderAndWrite(ctx) {
+    const { groupId, outputFolder } = ctx.config;
+    const grouped = this._partitionTasksByType(ctx.registry, ctx.scoredIds);
+    const sectionDefs = [
+      { title: "Dailies", type: "daily" },
+      { title: "To-Dos", type: "todo" },
+      { title: "Rewards", type: "reward" },
+      { title: "Habits", type: "habit" }
+    ];
+    let totalRendered = 0;
+    const breakdownParts = [];
+    const output = [
+      `# Habitica Sync \u2014 ${ctx.config.TODAY}`,
+      // placeholder — replaced after the loop
+      ``,
+      ``
+    ];
+    const dataviewSource = outputFolder ? (0, import_obsidian3.normalizePath)(`${outputFolder}/habitica-fullsync`) : "habitica-fullsync";
+    for (const { title, type } of sectionDefs) {
+      const personal = grouped[type].personal;
+      const group = grouped[type].group;
+      const count = personal.length + group.length;
+      totalRendered += count;
+      breakdownParts.push(`${count} ${title.toLowerCase()}`);
+      output.push(`## ${title}`);
+      output.push(...formatTasks(personal, ctx.tagLookup, ctx.config.TODAY));
+      if (groupId) {
+        output.push("");
+        output.push("### Group Tasks");
+        output.push(...formatTasks(group, ctx.tagLookup, ctx.config.TODAY));
+      }
+      output.push("");
+      output.push(buildDataviewBlock(type, dataviewSource));
+      output.push("");
+    }
+    output[1] = `*${totalRendered} active tasks: ${breakdownParts.join(" \xB7 ")}*`;
+    await this.vaultHandler.ensureFolder(outputFolder);
+    await this.vaultHandler.writeFile(ctx.config.filePath, output.join("\n"));
+  }
+  /**
+   * Creates any unknown Habitica tags and registers them in the lookup maps. Returns the array of newly created tag ids so callers can push them onto their own tag-id list. Extracted from the verbatim duplication in `_createNewTasks` and `_syncManagedTasks`.
+   */
+  async _createTagsAndRegister(newTagNames, ctx, reverseIndex, callerName) {
+    const createdIds = [];
+    for (const name of newTagNames) {
+      try {
+        const tag = await this.apiClient.createTag(name);
+        ctx.tagLookup[tag.id] = tag.name;
+        reverseIndex[normalizeTagKey(tag.name)] = tag.id;
+        createdIds.push(tag.id);
+      } catch (err) {
+        console.error(`habitica-fullsync SyncManager.${callerName}: failed to create tag:`, err);
+      }
+    }
+    return createdIds;
+  }
+};
+
+// src/vault/vault-handler.ts
+var import_obsidian4 = require("obsidian");
+
+// src/vault/line-edit.ts
+function spliceLineByIndex(content, lineIndex, expectedLine, newLine) {
+  const lines = content.split("\n");
+  if (lineIndex < 0 || lineIndex >= lines.length) {
+    throw new Error(
+      `line-edit spliceLineByIndex: lineIndex ${lineIndex} out of range (0\u2013${lines.length - 1})`
+    );
+  }
+  const actual = lines[lineIndex];
+  if (actual !== expectedLine) {
+    throw new Error(
+      `line-edit spliceLineByIndex: mismatch at line ${lineIndex}.
+  expected: ${JSON.stringify(expectedLine)}
+  actual:   ${JSON.stringify(actual)}`
+    );
+  }
+  lines[lineIndex] = newLine;
+  return lines.join("\n");
+}
+
+// src/vault/vault-handler.ts
+var VaultHandler = class {
+  /** @param app The Obsidian application instance. Provides vault and file-system access. */
+  constructor(app) {
+    __publicField(this, "app");
+    __publicField(this, "recentlyChanged", /* @__PURE__ */ new Set());
+    this.app = app;
+  }
+  /** Called by main.ts when MetadataCache fires 'changed'. Tracks files for incremental scan. */
+  onFileChanged(file) {
+    this.recentlyChanged.add(file.path);
+  }
+  /**
+   * Reads a file's full text content by path. Prefers {@link Vault.cachedRead} when the file is tracked as a {@link TFile}; falls back to the adapter for first-sync (file may not exist yet). Returns an empty string if the file cannot be read.
+   */
+  async readFileContent(filePath) {
+    try {
+      const normalized = (0, import_obsidian4.normalizePath)(filePath);
+      const file = this.app.vault.getAbstractFileByPath(normalized);
+      if (file instanceof import_obsidian4.TFile) {
+        return await this.app.vault.cachedRead(file);
+      }
+      return await this.app.vault.adapter.read(normalized);
+    } catch (e) {
+      return "";
+    }
+  }
+  /**
+   * Scans all Markdown files modified on or after `cutoffDate` for completed tasks not yet scored.
+   *
+   * Delegates per-file processing to {@link _scanFileForCompleted}. Uses {@link MetadataCache.getFileCache} `listItems` to pre-filter — files with no completed task list items are skipped without being read.
+   *
+   * @param cutoffDate  Earliest date to consider.
+   * @param excludePath Vault-relative path to skip (the sync output file itself).
+   * @returns Array of `{ line, file, lineNumber }` for each qualifying task.
+   */
+  async getRecentCompletedTasks(cutoffDate, excludePath) {
+    const completedTasks = [];
+    let filesToScan = this.app.vault.getMarkdownFiles();
+    if (this.recentlyChanged.size > 0) {
+      const changedSet = this.recentlyChanged;
+      this.recentlyChanged = /* @__PURE__ */ new Set();
+      filesToScan = filesToScan.filter((f) => changedSet.has(f.path));
+    }
+    for (const file of filesToScan) {
+      if (file.stat.mtime < cutoffDate.getTime())
+        continue;
+      if (excludePath && file.path === excludePath)
+        continue;
+      const fileResults = await this._scanFileForCompleted(file, cutoffDate);
+      completedTasks.push(...fileResults);
+    }
+    return completedTasks;
+  }
+  /**
+   * Scans a single Markdown file for completed tasks meeting the cutoff.
+   *
+   * Pre-filters via {@link MetadataCache.getFileCache} — files with no completeds list items are skipped without being read. For qualifying files, each completed line is checked for `%%scored%%` and `[completion::]`.
+   */
+  async _scanFileForCompleted(file, cutoffDate) {
+    var _a;
+    const cache = this.app.metadataCache.getFileCache(file);
+    const completedItems = (_a = cache == null ? void 0 : cache.listItems) == null ? void 0 : _a.filter(
+      (li) => li.task && li.task !== " "
+    );
+    if (!completedItems || completedItems.length === 0)
+      return [];
+    const content = await this.app.vault.cachedRead(file);
+    const lines = content.split("\n");
+    const results = [];
+    for (const li of completedItems) {
+      const line = lines[li.position.start.line];
+      if (!line)
+        continue;
+      if (hasScoredMarker(line))
+        continue;
+      const completionDateStr = extractCompletionDate(line);
+      if (!completionDateStr)
+        continue;
+      const completionDate = new Date(completionDateStr + "T00:00:00Z");
+      if (completionDate >= cutoffDate) {
+        results.push({ line, file, lineNumber: li.position.start.line });
+      }
+    }
+    return results;
+  }
+  // ── Shared helpers ─────────────────────────────────────────────────────
+  /** Pure helper: replaces `content[lineIndex]` with `newLine`, verifying `oldLine`. */
+  _spliceLine(content, lineIndex, oldLine, newLine) {
+    return spliceLineByIndex(content, lineIndex, oldLine, newLine);
+  }
+  /** Writes content to a file, picking the best Vault API for the target type (S4). */
+  async _writeContent(target, content) {
+    if (target instanceof import_obsidian4.TFile) {
+      await this.app.vault.modify(target, content);
+      return;
+    }
+    const normalized = (0, import_obsidian4.normalizePath)(target);
+    const file = this.app.vault.getAbstractFileByPath(normalized);
+    if (file instanceof import_obsidian4.TFile) {
+      await this.app.vault.process(file, () => content);
+      return;
+    }
+    await this.app.vault.adapter.write(normalized, content);
+  }
+  /** Reads content from a file, picking the best Vault API for the target type. */
+  async _readContent(target) {
+    if (target instanceof import_obsidian4.TFile)
+      return this.app.vault.read(target);
+    const normalized = (0, import_obsidian4.normalizePath)(target);
+    const file = this.app.vault.getAbstractFileByPath(normalized);
+    if (file instanceof import_obsidian4.TFile)
+      return this.app.vault.cachedRead(file);
+    return this.app.vault.adapter.read(normalized);
+  }
+  // ── Line update (positional primary + legacy fallbacks) ────────────────
+  /**
+     * Replaces a single line by positional index (primary path). Reads content, splices the line at `lineIndex` (verifying against `oldLine`), and writes back.
+     *
+     * Accepts either a {@link TFile} or a vault-relative path string. When given a `TFile`, uses `vault.read`/`vault.modify`. When given a path, tries `vault.process` on a tracked `TFile` first, falling back to `adapter`.
+  
+     * @param target     The vault file (as TFile) or vault-relative path string.
+     * @param lineNumber 0-based index of the line to replace.
+     * @param oldLine    Expected current line text (verified before write).
+     * @param newLine    Replacement line text.
+     */
+  async updateLine(target, lineNumber, oldLine, newLine) {
+    const content = await this._readContent(target);
+    await this._writeContent(target, this._spliceLine(content, lineNumber, oldLine, newLine));
+  }
+  /**
+   * Ensures a folder exists in the vault, creating it if necessary. Does nothing if `folderPath` is an empty string.
+   * @param folderPath Vault-relative path (e.g. `'Habitica/Tasks'`).
+   */
+  async ensureFolder(folderPath) {
+    if (!folderPath)
+      return;
+    const normalized = (0, import_obsidian4.normalizePath)(folderPath);
+    const folderExists = await this.app.vault.adapter.exists(normalized);
+    if (!folderExists) {
+      await this.app.vault.createFolder(normalized);
+    }
+  }
+  /**
+   * Writes a string to a vault file, creating or overwriting it. Delegates to
+   * {@link _writeContent} which picks the best Vault API for the target.
+   * @param filePath Vault-relative path (e.g. `'Habitica/habitica-fullsync.md'`).
+   * @param content  The complete string content to write.
+   */
+  async writeFile(filePath, content) {
+    await this._writeContent((0, import_obsidian4.normalizePath)(filePath), content);
   }
 };
 
 // src/main.ts
-var HabiticaSyncFullPlugin = class extends import_obsidian.Plugin {
-  /**
-   * Lifecycle hook called when Obsidian loads the plugin.
-   *
-   * Performs in order:
-   * 1. Loads persisted settings.
-   * 2. Instantiates `HabiticaApiClient`, `VaultHandler`, and `SyncManager`.
-   * 3. Registers the `sync-habitica` command in the command palette.
-   * 4. Adds the settings tab.
-   * 5. If `autoSync` is enabled and the current platform matches `autoSyncPlatform`,
-   *    runs an immediate sync and starts the repeat interval.
-   */
+var HabiticaSyncFullPlugin = class extends import_obsidian5.Plugin {
+  constructor() {
+    super(...arguments);
+    // Definite assignment (`!`) is safe here — all four fields are initialised in onload() before any method touches them. A factory function would be more idiomatic but adds indirection for no behavioural gain.
+    __publicField(this, "settings");
+    __publicField(this, "apiClient");
+    __publicField(this, "vaultHandler");
+    __publicField(this, "syncManager");
+    /** Handle returned by `setInterval` for the auto-sync timer. `undefined` when auto-sync is off. */
+    __publicField(this, "autoSyncInterval");
+    __publicField(this, "statusBarItem");
+  }
   async onload() {
     await this.loadSettings();
-    this.apiClient = new HabiticaApiClient(this.settings.apiUser, this.settings.apiToken);
+    const apiToken = await this._resolveApiToken();
+    this.apiClient = new HabiticaApiClient(this.settings.apiUser, apiToken);
     this.vaultHandler = new VaultHandler(this.app);
     this.syncManager = new SyncManager(
       this.apiClient,
       this.vaultHandler,
       this.settings,
-      (msg) => new import_obsidian.Notice(msg)
+      (msg) => new import_obsidian5.Notice(msg)
     );
     this.addCommand({
       id: "sync-habitica",
-      name: "Sync Habitica Tasks",
-      callback: () => this.syncHabitica()
+      name: "Sync Habitica tasks",
+      callback: () => this.syncHabitica(true)
     });
     this.addSettingTab(new HabiticaSyncSettingTab(this.app, this));
-    const platformSetting = this.settings.autoSyncPlatform || "both";
-    const isMobile = isMobilePlatform();
-    let shouldAutoSync = false;
-    if (platformSetting === "both")
-      shouldAutoSync = true;
-    else if (platformSetting === "desktop" && !isMobile)
-      shouldAutoSync = true;
-    else if (platformSetting === "mobile" && isMobile)
-      shouldAutoSync = true;
-    if (this.settings.autoSync && shouldAutoSync) {
-      this.syncHabitica();
-      const intervalMs = this.settings.syncInterval * 60 * 1e3;
-      this.autoSyncInterval = window.setInterval(() => this.syncHabitica(), intervalMs);
-    }
+    this.addRibbonIcon("refresh-cw", "Sync Habitica tasks", () => this.syncHabitica(true));
+    this.statusBarItem = this.addStatusBarItem();
+    this.statusBarItem.setText("\u{1F504} Ready");
+    this.app.workspace.onLayoutReady(() => this._scheduleAutoSync());
+    this.registerEvent(
+      this.app.metadataCache.on("changed", (file) => {
+        this.vaultHandler.onFileChanged(file);
+      })
+    );
   }
-  /**
-   * Lifecycle hook called when the plugin is disabled or Obsidian shuts down.
-   * Clears the auto-sync interval to prevent memory leaks and stale callbacks.
-   */
   onunload() {
+  }
+  /** Starts or restarts the auto-sync interval based on current settings. */
+  _scheduleAutoSync() {
     if (this.autoSyncInterval) {
-      clearInterval(this.autoSyncInterval);
+      window.clearInterval(this.autoSyncInterval);
+      this.autoSyncInterval = void 0;
+    }
+    const platformSetting = this.settings.autoSyncPlatform || "both";
+    if (this.settings.autoSync && shouldAutoSync(platformSetting, isMobilePlatform())) {
+      this.autoSyncInterval = window.setInterval(
+        () => {
+          void this.syncHabitica();
+        },
+        this.settings.syncInterval * 60 * 1e3
+      );
+      this.registerInterval(this.autoSyncInterval);
     }
   }
   /**
-   * Loads plugin settings from Obsidian's data store, merging with defaults.
-   *
-   * Uses `Object.assign` so stored values override defaults while unknown stored keys
-   * (e.g. a removed `machineId` from a previous version's `data.json`) are silently ignored.
+   * Loads settings from Obsidian's data store, merging stored values over {@link DEFAULT_SETTINGS}.
    */
   async loadSettings() {
-    this.settings = Object.assign({
-      apiUser: "",
-      apiToken: "",
-      groupId: "",
-      outputFolder: "",
-      autoSync: false,
-      autoSyncPlatform: "both",
-      syncInterval: 30,
-      disableScoring: false,
-      disableCreating: false
-    }, await this.loadData());
+    const stored = await this.loadData();
+    this.settings = { ...DEFAULT_SETTINGS, ...stored };
+  }
+  /** Resolves the actual API token from SecretStorage. Awaiting handles both sync and async {@link SecretStorage} implementations — no-op on a string, correct on a Promise. */
+  async _resolveApiToken() {
+    var _a;
+    const name = this.settings.apiTokenSecretName;
+    if (!name) {
+      new import_obsidian5.Notice("Habitica Full Sync: API token not configured. Set a secret name in plugin settings.");
+      return "";
+    }
+    const token = (_a = await this.app.secretStorage.getSecret(name)) != null ? _a : "";
+    if (!token) {
+      new import_obsidian5.Notice("Habitica Full Sync: Could not read API token from SecretStorage. Re-enter it in plugin settings.");
+    }
+    return token;
   }
   /**
-   * Persists the current settings to Obsidian's data store and rebuilds the API client
-   * so credential changes (API User / API Token) take effect immediately without
-   * requiring a plugin reload.
-   * Called after every settings change in {@link HabiticaSyncSettingTab}.
+   * Persists settings and conditionally rebuilds the API client. The API client + SyncManager are only reconstructed when credentials actually change.
    */
   async saveSettings() {
+    var _a, _b;
+    const oldUser = (_a = this.apiClient) == null ? void 0 : _a.userId;
+    const oldToken = (_b = this.apiClient) == null ? void 0 : _b.apiToken;
     await this.saveData(this.settings);
-    this.apiClient = new HabiticaApiClient(this.settings.apiUser, this.settings.apiToken);
-    this.syncManager = new SyncManager(
-      this.apiClient,
-      this.vaultHandler,
-      this.settings,
-      (msg) => new import_obsidian.Notice(msg)
-    );
+    const newToken = await this._resolveApiToken();
+    if (this.settings.apiUser !== oldUser || newToken !== oldToken) {
+      this.apiClient = new HabiticaApiClient(this.settings.apiUser, newToken);
+      this.syncManager = new SyncManager(
+        this.apiClient,
+        this.vaultHandler,
+        this.settings,
+        (msg) => new import_obsidian5.Notice(msg)
+      );
+    }
+    this._scheduleAutoSync();
   }
   /**
    * Triggers a full Habitica ↔ Obsidian sync.
-   * Delegates to `SyncManager.sync()`, which handles concurrency guarding and error reporting.
+   * @param allowUpdates When `true`, task field edits in the markdown are pushed to Habitica. Defaults to `false` (auto-sync never mutates task metadata).
    */
-  async syncHabitica() {
-    await this.syncManager.sync();
-  }
-};
-var HabiticaSyncSettingTab = class extends import_obsidian.PluginSettingTab {
-  /**
-   * @param app    The Obsidian application instance.
-   * @param plugin The parent plugin instance, providing access to settings and save methods.
-   */
-  constructor(app, plugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
-  /**
-   * Renders all settings controls into the settings container.
-   * Settings (in order): API User, API Token (password-masked), Group ID, Output Folder,
-   * Automatic Sync toggle, Auto Sync Platform dropdown, Sync Interval, Disable Scoring,
-   * Disable Creating New Tasks.
-   */
-  display() {
-    const { containerEl } = this;
-    containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("API User").setDesc("Your Habitica API User ID").addText((text) => text.setPlaceholder("Enter API User").setValue(this.plugin.settings.apiUser).onChange(async (value) => {
-      this.plugin.settings.apiUser = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(containerEl).setName("API Token").setDesc("Your Habitica API Token (kept in Obsidian local storage; do not share your vault)").addText((text) => {
-      text.setPlaceholder("Enter API Token").setValue(this.plugin.settings.apiToken).onChange(async (value) => {
-        this.plugin.settings.apiToken = value;
-        await this.plugin.saveSettings();
-      });
-      text.inputEl.type = "password";
-      return text;
-    });
-    new import_obsidian.Setting(containerEl).setName("Group ID").setDesc("Your Habitica Group ID for shared tasks").addText((text) => text.setPlaceholder("Enter Group ID").setValue(this.plugin.settings.groupId).onChange(async (value) => {
-      this.plugin.settings.groupId = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(containerEl).setName("Output folder").setDesc("Folder where habitica-fullsync.md will be saved (leave blank for vault root)").addText((text) => text.setPlaceholder("e.g., Habitica").setValue(this.plugin.settings.outputFolder).onChange(async (value) => {
-      this.plugin.settings.outputFolder = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(containerEl).setName("Automatic sync").setDesc("Enable automatic sync on load and every X minutes").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoSync).onChange(async (value) => {
-      this.plugin.settings.autoSync = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(containerEl).setName("Auto sync platform").setDesc("Choose which devices should run auto sync").addDropdown((dropdown) => {
-      dropdown.addOption("both", "Both Desktop and Mobile").addOption("desktop", "Desktop Only").addOption("mobile", "Mobile Only").setValue(this.plugin.settings.autoSyncPlatform || "both").onChange(async (value) => {
-        this.plugin.settings.autoSyncPlatform = value;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian.Setting(containerEl).setName("Sync interval (minutes)").setDesc("How often to run auto-sync when enabled").addText((text) => text.setPlaceholder("e.g., 30").setValue(String(this.plugin.settings.syncInterval)).onChange(async (value) => {
-      const num = parseInt(value, 10);
-      if (!isNaN(num) && num > 0) {
-        this.plugin.settings.syncInterval = num;
-        await this.plugin.saveSettings();
+  async syncHabitica(allowUpdates) {
+    this.statusBarItem.setText("\u23F3 Syncing\u2026");
+    try {
+      const result = await this.syncManager.sync({ allowUpdates });
+      if (result === "completed") {
+        this.statusBarItem.setText("\u2705 Synced just now");
+      } else {
+        this.statusBarItem.setText("\u{1F504} Ready");
       }
-    }));
-    new import_obsidian.Setting(containerEl).setName("Disable scoring").setDesc("Enable this to prevent scoring tasks in Habitica (read-only sync)").addToggle((toggle) => toggle.setValue(this.plugin.settings.disableScoring).onChange(async (value) => {
-      this.plugin.settings.disableScoring = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(containerEl).setName("Disable creating new tasks").setDesc("Enable this to prevent creating new tasks in Habitica from non-habitica tasks completed in Obsidian").addToggle((toggle) => toggle.setValue(this.plugin.settings.disableCreating).onChange(async (value) => {
-      this.plugin.settings.disableCreating = value;
-      await this.plugin.saveSettings();
-    }));
+    } catch (err) {
+      this.statusBarItem.setText("\u274C Sync failed");
+      throw err;
+    }
   }
 };
 var main_default = HabiticaSyncFullPlugin;

@@ -1,10 +1,10 @@
-
 {
   "id": "habitica-fullsync",
   "name": "Habitica Full Sync",
   "version": "1.8.0",
-  "minAppVersion": "0.15.0",
-  "author": "MidwestGuru",
-  "description": "Sync Habitica tasks, score completed tasks, support group tasks, folder selection, automatic sync, device binding, and advanced options.",
+  "minAppVersion": "1.11.4",
+  "author": "Lucas Galdino, MidwestGuru",
+  "authorUrl": "https://github.com/lucasgaldinos",
+  "description": "Sync Habitica tasks, score completed tasks, support group tasks, folder selection, automatic sync, device binding, and advanced options. Started as a fork from MidwestGuru",
   "isDesktopOnly": false
 }

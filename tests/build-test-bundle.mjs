@@ -1,22 +1,17 @@
 /*
- * Transpiles the pure-logic source modules into ESM bundles the Node test runner can import.
+ * Transpiles the pure-logic source modules into an ESM bundle the Node test runner can import.
  *
- * The plugin source is TypeScript with an `obsidian` peer import; esbuild (already a
- * devDependency) bundles each entry point with `obsidian` marked external. Only modules whose
- * runtime code does not actually touch the Obsidian API can be imported this way — `helpers.ts`
- * re-exports `escapeRegExp` from `vault-handler.ts`, whose only `obsidian` usage is type-level
- * (erased at compile time), so the bundle has no runtime dependency on `obsidian`.
+ * The plugin source is TypeScript with an `obsidian` peer import; esbuild (already a devDependency) bundles the test barrel with `obsidian` marked external. Only modules whose runtime code does not actually touch the Obsidian API can be imported this way — all re-exported functions are pure logic with type-level-only obsidian usage (erased at compile time), so the bundle has no runtime dependency on `obsidian`.
  */
 import { build } from 'esbuild';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = resolve(here, '..');
 
 await build({
-  entryPoints: [resolve(root, 'src/helpers.ts')],
-  outfile: resolve(here, 'dist/helpers.mjs'),
+  entryPoints: [resolve(here, 'test-barrel.ts')],
+  outfile: resolve(here, 'dist/barrel.mjs'),
   bundle: true,
   format: 'esm',
   platform: 'node',
@@ -25,4 +20,4 @@ await build({
   logLevel: 'warning',
 });
 
-console.log('test bundle built: tests/dist/helpers.mjs');
+console.log('test bundle built: tests/dist/barrel.mjs');

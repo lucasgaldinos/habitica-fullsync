@@ -4,7 +4,7 @@ import {
   sanitizeTag,
   normalizeTagKey,
   buildTagReverseIndex,
-} from './dist/helpers.mjs';
+} from './dist/barrel.mjs';
 
 test('sanitizeTag converts spaces to hyphens', () => {
   assert.equal(sanitizeTag('data engineering'), 'data-engineering');

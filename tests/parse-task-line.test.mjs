@@ -5,7 +5,7 @@ import {
   sectionToType,
   isValidDateString,
   buildTagReverseIndex,
-} from './dist/helpers.mjs';
+} from './dist/barrel.mjs';
 
 const reverse = buildTagReverseIndex({ t1: 'data engineering', t2: 'focus' });
 
@@ -14,7 +14,7 @@ test('sectionToType maps headings to task types', () => {
   assert.equal(sectionToType('Dailies'), 'daily');
   assert.equal(sectionToType('Habits'), 'habit');
   assert.equal(sectionToType('Rewards'), 'reward');
-  assert.equal(sectionToType('Nonsense'), 'todo');
+  assert.equal(sectionToType('Nonsense'), undefined);
 });
 
 test('isValidDateString rejects impossible dates', () => {
@@ -62,10 +62,11 @@ test('rejects an invalid due date (leaves date unset)', () => {
   assert.equal(p.date, undefined);
 });
 
-test('passes through notes and checklist texts', () => {
-  const p = parseTaskLine('- [ ] Has stuff', 'To-Dos', reverse, 'note text', ['sub1', 'sub2']);
+test('passes through notes and checklist items', () => {
+  const items = [{ text: 'sub1', checked: false }, { text: 'sub2', checked: true, subId: 'abc' }];
+  const p = parseTaskLine('- [ ] Has stuff', 'To-Dos', reverse, 'note text', items);
   assert.equal(p.notes, 'note text');
-  assert.deepEqual(p.checklistTexts, ['sub1', 'sub2']);
+  assert.deepEqual(p.checklistItems, items);
 });
 
 test('returns empty text for a line with no title content', () => {
