@@ -11,13 +11,11 @@ tags:
 
 # Architecture — habitica-fullsync
 
-
-
 ## Overview
 
-**habitica-fullsync** is an [Obsidian](https://obsidian.md) plugin that bidirectionally syncs tasks between a user's [Habitica](https://habitica.com) account and their Obsidian vault. It was originally a 471-line vanilla javascript monolith by MidwestGuru and has been rewritten into 17 typescript modules (~3,100 lines) following SOLID principles.
+**habitica-fullsync** is an [Obsidian](https://obsidian.md) plugin that bidirectionally syncs tasks between a user's [Habitica](https://habitica.com) account and their Obsidian vault. It was originally a 471-line vanilla javascript monolith by MidwestGuru and has been rewritten into 20 typescript modules following SOLID principles, utilizing an embedded SQLite database (sql.js) for robust state management.
 
-The plugin runs a 5-step sync pipeline: fetch Habitica data → score completed tasks → create new tasks from markdown → sync managed task changes → render and write the output file. All Habitica API calls are serialised through a promise queue with configurable spacing to respect Habitica's 30 req/min rate limit.
+The plugin now uses a dual-layer architecture: a normalized 3NF local SQLite database (`state.sqlite`) acts as the single source of truth, while the Markdown file (`habitica-fullsync.md`) acts as the presentation and user-input layer. The plugin runs explicit Pull and Push sync flows powered by an ETL (Extract, Transform, Load) pipeline for pushing local edits. All Habitica API calls are serialised through a promise queue with configurable spacing to respect Habitica's 30 req/min rate limit.
 
 ### Design Philosophy
 
@@ -111,62 +109,20 @@ The domain model is centralized in `src/types.ts` with zero logic and zero Obsid
 
 ## Sync Pipeline
 
-`SyncManager.sync()` orchestrates 5 sequential steps. Each has its own error boundary — a failure in one step cannot prevent output regeneration.
+The sync process is now split into explicit **Pull** and **Push** operations, orchestrated by `SyncManager`, to prevent data loss and ensure robust state management using the SQLite database.
 
-```ascii
-sync(options?: { allowUpdates?: boolean })
-│
-├─ [GUARD] _syncInFlight mutex — skip if already running
-├─ [GUARD] preSyncDelay — skip if last sync < 2 min ago
-├─ [SETUP] Snapshot PluginSettings → SyncConfig (immutable)
-├─ [SETUP] new TaskRegistry(), new SyncReport(), assemble SyncContext
-├─ [PARSE] parseSyncFile(content) → SyncFileEntry[] (single pass)
-│
-├─ _timedStep('[hf:step] full-sync')
-│  │
-│  ├─ STEP 1: _fetchFromHabitica(ctx)
-│  │   ├─ fetchUserTasks()           → registry.personal
-│  │   ├─ fetchTags()                → ctx.tagLookup
-│  │   └─ fetchGroupTasks(groupId)   → registry.group  (if groupId set)
-│  │
-│  ├─ STEP 2: _scoreCompletedTasks(ctx, syncFileEntries)
-│  │   ├─ Score sync-file checked tasks (kind==='checked' + id)
-│  │   │   └─ scoreTask(id, 'up') → add to ctx.scoredIds
-│  │   └─ (if enableVaultScan) Scan vault for recent completions
-│  │       ├─ With [id::]: scoreTask → mark %%scored%%
-│  │       └─ Without [id::]: createTask → write [id::] → scoreTask → mark %%scored%%
-│  │
-│  ├─ STEP 3: _createNewTasks(ctx, syncFileEntries)
-│  │   └─ For each kind==='creatable':
-│  │       ├─ parseTaskLine() → NewTaskInput
-│  │       ├─ Create unknown tags
-│  │       ├─ createTask() → push to registry
-│  │       ├─ Add checklist items
-│  │       └─ Write [id::] back to vault line (crash-safe)
-│  │
-│  ├─ STEP 4: _syncManagedTasks(ctx, syncFileEntries)   [only if allowUpdates]
-│  │   └─ For each kind==='managed':
-│  │       ├─ parseManagedTaskLine() → ManagedTaskFields
-│  │       ├─ [delete sentinel] → deleteTask()
-│  │       ├─ _diffChecklistItems() → {newItems, scoreItemIds, editItems, deletedItemIds}
-│  │       │   ├─ New items → addChecklistItem()
-│  │       │   ├─ Checked items → scoreChecklistItem()
-│  │       │   ├─ Edited items → updateChecklistItem()
-│  │       │   └─ Deleted items → deleteChecklistItem()
-│  │       └─ Field diff (text, priority, date, notes, tags, up, down, streak,
-│  │           attribute, frequency, everyX, repeat, startDate)
-│  │           └─ If any differ → updateTask()
-│  │
-│  └─ STEP 5: _renderAndWrite(ctx)
-│       ├─ _partitionTasksByType() → { daily, todo, reward, habit } × { personal, group }
-│       ├─ filterActive() per bucket
-│       ├─ formatTasks() → markdown lines with inline fields, callouts, checklists
-│       ├─ buildDataviewBlock() per type
-│       ├─ ensureFolder(outputFolder)
-│       └─ writeFile(filePath, output)
-│
-└─ [FINALLY] _syncInFlight = false, _lastSyncEndTime = now
-```
+### Pull Flow (`SyncManager.pull()`)
+1. **Pre-check:** Scans the local Markdown file for unsynced edits (creations, deletions, or field changes).
+2. **Conflict Resolution:** If unsynced edits exist, a `SyncWarningModal` prompts the user to cancel or snooze the auto-sync to protect local changes.
+3. **Fetch & Store:** Fetches all tasks and tags from Habitica and upserts them into the local SQLite database (`SQLiteStore`).
+4. **Render:** Generates the new Markdown file from the SQLite database state, overwriting the local file safely.
+
+### Push Flow (`SyncManager.push()`)
+1. **Extract Markdown State**: Reads the local Markdown file and extracts parsed tasks into temporary SQLite staging tables (`staging_tasks`, `staging_checklists`, `staging_tags`, `staging_task_tags`).
+2. **Transform (Compute Diffs)**: Computes SQL diffs (`diff_tasks`, `diff_checklists`, `diff_tags`) between the staging tables and the normalized 3NF source of truth.
+3. **Load to Remote**: Pushes any creations, edits, checklist mutations, or deletions identified by the diffs to the Habitica API.
+4. **Update Local State**: Re-fetches updated tasks from the API and upserts them into the local SQLite database.
+5. **Cleanup & Render**: Deletes tasks removed remotely, saves the SQLite database, and regenerates the Markdown file.
 
 ### allowUpdates Gate
 

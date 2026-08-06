@@ -50,14 +50,14 @@ tags: ["usage", "habitica", "obsidian-plugin"]
 ## Quick start
 
 1. **Install** the plugin and configure your Habitica API credentials in Settings.
-2. **Run a manual sync** (`Ctrl+P` → **Sync Habitica tasks**, or click the ribbon icon).
+2. **Run a manual sync** (`Ctrl+P` → **Habitica: Sync both (push then pull)**, or click the ribbon icon).
 3. Open the generated `habitica-fullsync.md` file — it contains all your Habitica tasks organized by type.
 4. **Check off a task** (`- [x]`) in the file and sync again — it will be scored in Habitica.
 5. **Write a new task** (`- [ ]`) under any section with no `[id::]` — it will be created in Habitica on the next manual sync.
 
 ## The sync file
 
-The plugin generates a single Markdown file (`habitica-fullsync.md`) in your configured output folder. This file is the **bidirectional bridge** between your vault and Habitica — every change you make to it is read on the next sync and pushed to Habitica (on manual sync; see [Manual vs automatic sync](#manual-vs-automatic-sync)).
+The plugin uses an embedded SQLite database normalized to 3NF as its source of truth, and generates a single Markdown file (`habitica-fullsync.md`) in your configured output folder. This file is the **bidirectional bridge** between your vault and Habitica — every change you make to it is read on the next sync and pushed to Habitica via an internal ETL pipeline.
 
 ### Sections
 
@@ -219,7 +219,7 @@ This path also supports **creating** tasks: if a completed vault line has no `[i
 
 ## Editing existing tasks
 
-Edit a managed task's inline fields in the sync file and run a **manual** sync. The plugin compares your edits against the Habitica server state and pushes differences via `PUT /tasks/:id`.
+Edit a managed task's inline fields in the sync file and run a **manual** sync. The plugin extracts your edits into staging tables, compares them against the normalized SQLite database, and pushes differences via `PUT /tasks/:id`.
 
 ### What syncs bidirectionally
 
@@ -338,7 +338,7 @@ This split prevents auto-sync from mutating your Habitica data without explicit 
 
 ### Sync triggers
 
-- **Command palette:** `Ctrl+P` → **Sync Habitica tasks**
+- **Command palette:** `Ctrl+P` → **Habitica: Sync both (push then pull)**
 - **Ribbon icon:** Click the `refresh-cw` icon in the left ribbon
 - **Auto-sync:** Runs on the configured interval (default 30 minutes) when enabled
 
@@ -383,7 +383,7 @@ These are intentionally one-directional (Habitica → Obsidian) or not yet imple
 | Task created with `[id::]` missing | Write-back of the ID failed (file permission, Vault API error). Check the Obsidian console for errors. | Add the ID manually from the Habitica task URL, or delete the line and recreate. |
 | `[subId::]` appears doubled on checklist items | Build predates the 2026-08-03 trim fix — whitespace-only subId values were immortal. | Rebuild the plugin from latest source. The next sync will fix affected lines. |
 | Sync file shows `_No tasks found._` | All tasks of that type are completed or scored. | Normal — the Dataview block still shows historical data. |
-| Edits to fields not reflected in Habitica | Auto-sync doesn't push field updates. Only manual sync does. | Trigger a manual sync (`Ctrl+P` → **Sync Habitica tasks**). |
+| Edits to fields not reflected in Habitica | Auto-sync doesn't push field updates. Only manual sync does. | Trigger a manual sync (`Ctrl+P` → **Habitica: Sync both (push then pull)**). |
 | "Sync already in progress" warning | A previous sync is still running. | Wait for it to complete. The status bar will update. |
 | Rate-limit warnings in console | The plugin is approaching Habitica's 30 req/min limit. | Normal for large task lists. The queue automatically spaces requests and pauses when needed. |
 | Unknown section warning | A `## Section` heading doesn't match any recognized type. | Use exactly `## Dailies`, `## To-Dos`, `## Habits`, or `## Rewards`. |

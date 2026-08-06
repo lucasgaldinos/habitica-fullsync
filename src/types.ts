@@ -44,7 +44,27 @@ export interface PluginSettings {
   completionLookbackDays: number;
 }
 
-/** A Habitica tag as returned by `GET /api/v3/tags`. */
+// ── Dependency Inversion (ISP) ────────────────────────────────────────────
+
+/**
+ * Minimal contract the settings tab needs from its host plugin. The concrete plugin class satisfies this structurally — no circular import from `main.ts` needed.
+ *
+ * Used by {@link HabiticaSyncSettingTab} for dependency inversion (DIP): the settings tab depends on this abstraction, not on the concrete `HabiticaSyncFullPlugin` class.
+ */
+export interface IPluginSettingsHost {
+  settings: PluginSettings;
+  saveSettings(): Promise<void>;
+}
+
+// ── Inline-Field Tokenizer ────────────────────────────────────────────────
+
+/** Return type for {@link import('./markdown/inline-fields').parseInlineFields}. */
+export interface InlineFields {
+  fields: Map<string, string>;
+  text: string;
+}
+
+// ── Habitica Data Shapes ──────────────────────────────────────────────────
 export interface HabiticaTag {
   /** UUID of the tag. */
   id: string;
@@ -114,13 +134,17 @@ export interface HabiticaTask {
    */
   priority?: number;
   /** For habit tasks: whether the positive (+) scoring direction is enabled. */
-  up?: boolean;
+  up?: number;
   /** For habit tasks: whether the negative (−) scoring direction is enabled. */
-  down?: boolean;
+  down?: number;
   /** Current streak counter for daily tasks. Server-managed; diff allows manual correction. */
   streak?: number;
   /** Task attribute (str/int/per/con). Controls which stat the task rewards on completion. */
   attribute?: 'str' | 'int' | 'per' | 'con';
+  /** The position of the task within its list. */
+  position?: number;
+  /** Group / party data for group tasks. */
+  group?: { id: string };
 }
 
 /**
@@ -144,9 +168,9 @@ interface BaseTaskFields {
   /** Weekly repeat days (enabled weekday → `true`). */
   repeat?: Record<string, boolean>;
   /** For habit tasks: whether the positive (+) scoring direction is enabled. */
-  up?: boolean;
+  up?: number;
   /** For habit tasks: whether the negative (−) scoring direction is enabled. */
-  down?: boolean;
+  down?: number;
   /** Current streak counter. */
   streak?: number;
   /** Task attribute (str/int/per/con). */
@@ -157,6 +181,8 @@ interface BaseTaskFields {
   newTagNames: string[];
   /** Notes parsed from a following `> [!note]` callout, or `undefined`. */
   notes?: string;
+  /** Whether the task is checked in markdown */
+  completed: boolean;
   /** Checklist items parsed from following nested `  - [ ]` / `  - [x]` lines, with optional `[subId::]` tracking. */
   checklistItems: ChecklistItemParsed[];
 }
@@ -236,11 +262,12 @@ export interface ParsedTaskFields {
   frequency?: 'daily' | 'weekly' | 'monthly' | 'yearly';
   everyX?: number;
   repeat?: Record<string, boolean>;
-  up?: boolean;
-  down?: boolean;
+  up?: number;
+  down?: number;
   streak?: number;
   attribute?: string;
   delete?: boolean;
+  completed: boolean;
   tagIds: string[];
   newTagNames: string[];
   text: string;

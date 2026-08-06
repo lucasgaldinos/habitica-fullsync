@@ -33,6 +33,7 @@ export default defineConfig(
     languageOptions: {
       globals: {
         ...globals.browser,   // Obsidian runs in Electron renderer
+        process: 'readonly',
       },
       parserOptions: {
         projectService: {
@@ -53,14 +54,6 @@ export default defineConfig(
   // ── Project-specific rule overrides (applied last, so they win) ──────
   {
     rules: {
-      // This plugin calls Habitica's external REST API — fetch is intentional, not a misuse of Obsidian's internal requestUrl helper.
-      'no-restricted-globals': 'off',
-
-      // Allow disabling specific obsidianmd rules where project needs diverge from the recommended set (e.g. prefer-setting-definitions vs custom controls).
-      'eslint-comments/no-restricted-disable': 'off',
-
-      // Turn off rules that conflict with this project's conventions
-      'obsidianmd/sample-names': 'off',
 
       // Sentence-case: allow Obsidian/Habitica proper nouns and common acronyms
       'obsidianmd/ui/sentence-case': ['warn', {

@@ -17,6 +17,7 @@ npm-debug.log*
 !.env.example
 .markdownlint.json
 .github/copilot-instructions.md
+*.sh
 
 # Obsidian-specific
 data.json
@@ -32,3 +33,4 @@ hot-reload.json
 .github/*
 docs/implementation-references/*
 docs/plan/
+scripts/

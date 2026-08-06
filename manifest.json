@@ -5,6 +5,6 @@
   "minAppVersion": "1.11.4",
   "author": "Lucas Galdino, MidwestGuru",
   "authorUrl": "https://github.com/lucasgaldinos",
-  "description": "Sync Habitica tasks, score completed tasks, support group tasks, folder selection, automatic sync, device binding, and advanced options. Started as a fork from MidwestGuru",
+  "description": "Bidirectional sync of Habitica tasks into Obsidian markdown. Score completions, create tasks from notes, sync checklists, tags, and recurrence rules — all from your vault.",
   "isDesktopOnly": false
 }

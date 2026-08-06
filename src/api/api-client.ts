@@ -235,6 +235,16 @@ export class HabiticaApiClient {
   }
 
   /**
+   * Fetches a single task by ID. Calls `GET /api/v3/tasks/:taskId`.
+   */
+  async getTask(taskId: string): Promise<HabiticaTask> {
+    return this._enqueue(async () => {
+      const res = await this.rateLimitedFetch(`${this.baseUrl}/tasks/${taskId}`, { headers: this.headers });
+      return this._parseResponse<HabiticaTask>(res, 'getTask');
+    }, 'getTask');
+  }
+
+  /**
    * Fetches all tags belonging to the authenticated user. Calls `GET /api/v3/tags`. Used to build a tag-lookup map (`id → name`) for task formatting.
    *
    * @throws {Error} On network failure, HTTP error, or Habitica application error.
@@ -414,7 +424,7 @@ export class HabiticaApiClient {
       }, 1); // destructive — don't retry aggressively
       if (res.status === 404) return null; // already deleted — idempotent
       if (res.status < 200 || res.status >= 300) {
-        const body = res.json || {};
+        const body = (res.json as unknown) || {};
         throw new Error(`DELETE /tasks/${id} failed: ${res.status} — ${JSON.stringify(body)}`);
       }
       return; // void — successful deletion

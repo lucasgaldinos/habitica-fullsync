@@ -252,7 +252,7 @@ A single `FIELD_REGISTRY: FieldDefinition[]` replaces:
 
 - [x] **F1 — Create `src/field-registry.ts`**: define `FieldDefinition` interface and `FIELD_REGISTRY` constant. Port all 12 existing fields (now 14 including `text` and `delete`). Include JSDoc for each field documenting the API behavior. ~364 lines.
   + `src/field-registry.ts` (new)
-- [x] **F2 — Adopt in `parser.ts:parseTaskFields()`**: replaced the 85-line `if (fields.get('priority'))` / `if (fields.get('due'))` / … chain with `parseFieldFromRegistry()` calls delegating to the registry. Context-dependent fields (due/date/startDate/frequency) kept as explicit logic — correct design choice given TypeScript's inability to map union-typed keys cleanly. ~6 calls replaced.
+- [x] **F2 — Adopt in `parser.ts:parseTaskFields()`**: replaced the 85-line `if (fields.get('priority'))` / `if (fields.get('due'))` / … chain with `parseFieldFromRegistry()` calls delegating to the registry. Context-dependent fields (due/date/startDate/frequency) kept as explicit logic — correct design choice given typescript's inability to map union-typed keys cleanly. ~6 calls replaced.
   + `src/markdown/parser.ts`
 - [x] **F3 — Adopt in `formatter.ts:formatTaskLine()`**: deleted `OPTIONAL_FIELD_RENDERERS` array, `FieldRenderer` type, and `WEEKDAY_KEYS` const. Replaced with `for (const def of FIELD_REGISTRY)` loop with `CORE_RENDERED_KEYS` skip-set. ~22 lines deleted, ~6 lines added.
   + `src/markdown/formatter.ts`
@@ -317,7 +317,51 @@ The plugin currently imports from `'obsidian'` in only 3 files: `main.ts` (`Plug
 
 ---
 
-## 🔮 Future (from plan.md)
+## � Pre-Launch Checklist (2026-08-04 ESLint audit)
+
+Cross-referenced against the [Obsidian plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines), [submission requirements](https://docs.obsidian.md/Plugins/Releasing/Submission+requirements+for+plugins), and [October self-critique checklist](https://docs.obsidian.md/oo/plugin).
+
+### 🔴 Blocker: Fix ESLint config — three rules disabled unnecessarily
+
+The current `eslint.config.mjs` ships three rule overrides that the codebase already complies with. They should be re-enabled as guardrails.
+
+- [x] **Re-enable `no-restricted-globals`**: Code already uses `requestUrl` (O1 completed in v1.8.0). Zero `fetch()` calls exist in `src/`. The config comment claiming "fetch is intentional" is factually wrong — the method is named `rateLimitedFetch` but calls `requestUrl` internally. Fix the comment and remove the override.
+  + `eslint.config.mjs:59–60` — remove `'no-restricted-globals': 'off'` and its misleading comment.
+- [x] **Re-enable `eslint-comments/no-restricted-disable`**: Zero `eslint-disable` comments exist anywhere in `src/`. The recommended config blocks these to prevent rules from being silenced without review. Re-enable.
+  + `eslint.config.mjs:62` — remove `'eslint-comments/no-restricted-disable': 'off'`.
+- [x] **Re-enable `obsidianmd/sample-names`**: Zero sample names (`MyPlugin`, `SampleSettingTab`) exist in the codebase. The October checklist explicitly requires placeholder removal. Re-enable to prevent regressions.
+  + `eslint.config.mjs:65` — remove `'obsidianmd/sample-names': 'off'`.
+- [x] **Run `npm run lint` after changes** — verified 0 errors, 0 warnings (2026-08-04).
+- [x] **Relocate misplaced type declarations to `types.ts`** (2026-08-04 audit): `IPluginSettingsHost` moved from `settings.ts`, `InlineFields` moved from `markdown/inline-fields.ts`. Both are pure types with zero Obsidian imports — the `types.ts` file is the single source of truth for shared interfaces (now 13 interfaces/types). `DeclarativeControlDef`/`DeclarativeSettingEntry` remain local to `settings.ts` (non-exported; `DeclarativeSettingEntry` references `Setting` from `'obsidian'`). Full audit confirmed no other misplaced exported types. `npm run lint`: 0 errors, 0 warnings.
+  + `src/types.ts` — added `IPluginSettingsHost`, `InlineFields`
+  + `src/settings.ts` — removed `IPluginSettingsHost`, imports from `./types`
+  + `src/markdown/inline-fields.ts` — removed `InlineFields`, imports from `../types`
+
+### 🟡 Pre-Launch: Manifest description cleanup
+
+- [x] **Rewrite `manifest.json` description** (2026-08-04): Changed from comma-separated feature list with fork backstory to action-oriented 170-char description. "Bidirectional sync of Habitica tasks into Obsidian markdown. Score completions, create tasks from notes, sync checklists, tags, and recurrence rules — all from your vault."
+
+### 🟡 Pre-Launch: sql.js mobile compatibility — deferred (2026-08-04)
+
+The plugin uses `sql.js` (SQLite WASM, ~1.5MB) persisted via `Vault.adapter.writeBinary`. On mobile, the adapter is `CapacitorAdapter`. WASM is technically web-standard and should work in mobile WebViews, but the Obsidian review may scrutinize it.
+
+- [ ] **Deferred until ≥1 beta tester with physical device is available**: Test `sql.js` WASM initialization, `adapter.writeBinary`, `adapter.mkdir`, and `adapter.exists` on real Android (Chrome WebView via USB debugging) and iOS (Safari WebView via Web Inspector) devices.
+- [ ] **Decision gate — if any test fails**: Migrate to Dexie.js (IndexedDB wrapper, ~20KB). See `docs/plan/plan.md` § Pre-Launch Readiness Audit for fallback options A/B/C.
+
+### 🟡 Pre-Launch: Address `obsidianmd/settings-tab/prefer-setting-definitions` warning
+
+`npm run lint` reports 1 warning in `src/settings.ts`. The data-driven `SETTING_DEFS` render loop is architecturally clean but diverges from the canonical pattern.
+
+- [x] **Add `getSettingDefinitions()` with dual-support (Path B)**: implemented declarative API alongside existing `display()`. `SecretComponent` handled via `render` callback (not natively supported as a declarative control type). `outputFolder` upgraded to native `folder` control. Local `DeclarativeControlDef`/`DeclarativeSettingEntry` types until `minAppVersion` ≥ 1.13.0. `_renderApiTokenControl()` extracted as private method — shared between both paths (DRY). Verified 0 errors, 0 warnings via `npm run lint` (2026-08-04).
+  + `src/settings.ts:getSettingDefinitions()`, `_renderApiTokenControl()`
+
+### ⚪ Pre-Launch: Beta testing (deferred)
+
+- [ ] **Deferred until pre-release is cut**: Create GitHub release, distribute via BRAT, recruit ≥3 testers (desktop + Android + iOS), collect feedback for ≥1 week. See `docs/plan/plan.md` § Pre-Launch Readiness Audit.
+
+---
+
+## Future (from plan.md)
 
 - [ ] Machine binding / device-locking via `window.crypto.subtle`
 - [ ] Score-result feedback (HP/XP/Gold delta notices)

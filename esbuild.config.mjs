@@ -12,6 +12,9 @@ if you want to view the source, please visit the github repository of this plugi
 const prod = (process.argv[2] === "production");
 
 const context = await esbuild.context({
+define: {
+  'process.env.NODE_ENV': prod ? '"production"' : '"development"',
+},
 banner: {
 js: banner,
 },
@@ -36,6 +39,7 @@ format: "cjs",
 target: "es2018",
 logLevel: "info",
 sourcemap: prod ? false : "inline",
+loader: { '.wasm': 'base64' },
 treeShaking: true,
 outfile: "main.js",
 });

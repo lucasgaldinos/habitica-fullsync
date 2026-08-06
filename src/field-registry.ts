@@ -85,11 +85,6 @@ function parseNumber(raw: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-function parseBoolean(raw: string | undefined): boolean | undefined {
-  if (raw === 'true') return true;
-  if (raw === 'false') return false;
-  return undefined;
-}
 
 function parseEnum<T extends string>(raw: string | undefined, allowed: readonly T[]): T | undefined {
   if (raw === undefined) return undefined;
@@ -124,6 +119,8 @@ function diffTagSet(parsed: unknown, habitica: unknown): boolean {
 
 function renderSimple(key: string, value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
+  if (typeof value === 'object') return buildInlineField(key, JSON.stringify(value));
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- fallback to default string conversion for primitive types
   return buildInlineField(key, String(value));
 }
 
@@ -212,18 +209,18 @@ export const FIELD_REGISTRY: FieldDefinition[] = [
   {
     name: 'up',
     inlineKey: 'up',
-    type: 'boolean',
+    type: 'number',
     apiKey: 'up',
-    parse: parseBoolean,
+    parse: parseNumber,
     render: (t) => renderSimple('up', t.up),
     diff: (p, h) => diffSimple(p, h) ? ['up', p] : undefined,
   },
   {
     name: 'down',
     inlineKey: 'down',
-    type: 'boolean',
+    type: 'number',
     apiKey: 'down',
-    parse: parseBoolean,
+    parse: parseNumber,
     render: (t) => renderSimple('down', t.down),
     diff: (p, h) => diffSimple(p, h) ? ['down', p] : undefined,
   },

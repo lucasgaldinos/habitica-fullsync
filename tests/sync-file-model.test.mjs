@@ -150,7 +150,7 @@ test('gathers nested notes and checklist items via scanner', () => {
   assert.equal(entry.checklistItems.length, 2);
   assert.equal(entry.checklistItems[0].text, 'Subtask one');
   assert.equal(entry.checklistItems[0].checked, false);
-  assert.equal(entry.checklistItems[1].text, 'Subtask two [subId:: sub-1]');
+  assert.equal(entry.checklistItems[1].text, 'Subtask two');
   assert.equal(entry.checklistItems[1].checked, true);
   assert.equal(entry.checklistItems[1].subId, 'sub-1');
 });

@@ -24,8 +24,8 @@
  * | `disableCreating`   | `boolean`                               | `false`  | Prevent creating new Habitica tasks      |
  */
 
-import { App, Notice, Plugin, PluginSettingTab, SecretComponent, Setting } from 'obsidian';
-import { AutoSyncPlatform, PluginSettings } from './types';
+import { App, Notice, Plugin, PluginSettingTab, SecretComponent, Setting, SettingDefinitionItem } from 'obsidian';
+import { IPluginSettingsHost, PluginSettings } from './types';
 
 // ── Defaults (single source of truth) ─────────────────────────────────────
 
@@ -42,16 +42,6 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   enableVaultScan: false,
   completionLookbackDays: 4
 };
-
-// ── Interface Segregation (DIP) ───────────────────────────────────────────
-
-/**
- * Minimal contract the settings tab needs from its host. The concrete plugin class satisfies this structurally — no circular import needed.
- */
-export interface IPluginSettingsHost {
-  settings: PluginSettings;
-  saveSettings(): Promise<void>;
-}
 
 // ── Settings Definitions (data-driven) ────────────────────────────────────
 
@@ -84,12 +74,20 @@ const SETTING_DEFS: SettingDef[] = [
 
 // ── Settings Tab ──────────────────────────────────────────────────────────
 
+// Local types for the Obsidian 1.13.0+ declarative settings API.
+// Replace with imports from 'obsidian' when minAppVersion is bumped to ≥ 1.13.0.
+// See: https://docs.obsidian.md/Plugins/User+interface/Settings
+
 /**
  * Obsidian settings tab for the Habitica Full Sync plugin.
  *
- * Settings are rendered from {@link SETTING_DEFS} — a single data-driven array rather than copy-pasted `new Setting(...)` blocks. Adding a setting now requires only one new entry in the array.
+ * - **Obsidian ≥ 1.13.0**: calls {@link getSettingDefinitions}, which returns a declarative array. Obsidian handles rendering, search indexing, persistence, and validation. `display()` is skipped.
+ * - **Obsidian < 1.13.0**: calls {@link display}, which renders imperatively from the same `SETTING_DEFS` data.
+ *
+ * The imperative `display()` path is preserved for backward compatibility with Obsidian versions below 1.13.0. Once `minAppVersion` is bumped to 1.13.0, `display()` and `SETTING_DEFS` can be deleted, and the local `DeclarativeControlDef` / `DeclarativeSettingEntry` types can be replaced with imports from `'obsidian'`.
+ *
+ * Settings are defined once as data — the declarative array and the imperative render loop both describe the same 11 settings.
  */
-// eslint-disable-next-line obsidianmd/settings-tab/prefer-setting-definitions -- custom controls (password-masked text, interval validation) are not supported by the declarative API
 export class HabiticaSyncSettingTab extends PluginSettingTab {
   /** Satisfies `IPluginSettingsHost` structurally. */
   declare plugin: IPluginSettingsHost;
@@ -103,6 +101,98 @@ export class HabiticaSyncSettingTab extends PluginSettingTab {
     super(app, plugin as unknown as Plugin);
     this.plugin = plugin;
   }
+
+  // ── Declarative API (Obsidian ≥ 1.13.0) ─────────────────────────────────
+
+  /**
+   * Declarative settings definitions for Obsidian 1.13.0+.
+   *
+   * Obsidian reads `this.plugin.settings[key]`, writes changes back, and calls `saveData()` automatically. No `onChange` plumbing, no `display()` DOM construction. Each entry maps to the same setting as the imperative {@link SETTING_DEFS} array.
+   *
+   * The `apiTokenSecretName` setting uses a `render` callback instead of a `control` because {@link SecretComponent} is not available as a first-class declarative control type in Obsidian 1.13.0.
+   *
+   * @returns An array of setting definitions that Obsidian renders as the settings UI.
+   */
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      {
+        name: 'API user',
+        desc: 'Your Habitica API user ID',
+        control: { type: 'text', key: 'apiUser', placeholder: 'Enter API user' },
+      },
+      {
+        name: 'API token',
+        desc: 'Your Habitica API token, stored securely via Obsidian SecretStorage',
+        render: (setting: Setting) => this._renderApiTokenControl(setting),
+      },
+      {
+        name: 'Group ID',
+        desc: 'Your Habitica group ID for shared tasks',
+        control: { type: 'text', key: 'groupId', placeholder: 'Enter group ID' },
+      },
+      {
+        name: 'Output folder',
+        desc: 'Folder where habitica-fullsync.md will be saved (leave blank for vault root)',
+        control: { type: 'folder', key: 'outputFolder', includeRoot: true, placeholder: 'E.g., Habitica' },
+      },
+      {
+        name: 'Automatic sync',
+        desc: 'Enable automatic sync on load and every x minutes',
+        control: { type: 'toggle', key: 'autoSync' },
+      },
+      {
+        name: 'Auto sync platform',
+        desc: 'Choose which devices should run auto sync',
+        control: {
+          type: 'dropdown',
+          key: 'autoSyncPlatform',
+          defaultValue: 'both',
+          options: { both: 'Both desktop and mobile', desktop: 'Desktop only', mobile: 'Mobile only' },
+        },
+      },
+      {
+        name: 'Sync interval (minutes)',
+        desc: 'How often to run auto-sync when enabled',
+        control: { type: 'number', key: 'syncInterval', min: 1, placeholder: '30', defaultValue: 30 },
+      },
+      {
+        name: 'Disable scoring',
+        desc: 'Enable this to prevent scoring tasks in Habitica (read-only sync)',
+        control: { type: 'toggle', key: 'disableScoring' },
+      },
+      {
+        name: 'Disable creating new tasks',
+        desc: 'Enable this to prevent creating new tasks in Habitica from non-Habitica tasks completed in Obsidian',
+        control: { type: 'toggle', key: 'disableCreating' },
+      },
+      {
+        name: 'Scan vault for completed tasks',
+        desc: 'Scan all markdown files in your vault for checked-off tasks with a [completion::] field and score them in Habitica. When off, only the sync file (Habitica-fullsync.md) is checked.',
+        control: { type: 'toggle', key: 'enableVaultScan' },
+      },
+      {
+        name: 'Completion lookback (days)',
+        desc: 'How many days back to look for recently completed tasks in your vault. Defaults to 4 — covers a typical weekend gap.',
+        control: { type: 'number', key: 'completionLookbackDays', min: 1, placeholder: '4', defaultValue: 4 },
+      },
+    ];
+  }
+
+  /**
+   * Renders the API token {@link SecretComponent} inside a declarative setting row.
+   *
+   * SecretComponent is not available as a first-class declarative `control` type in Obsidian 1.13.0, so it must be wired manually via a `render` callback. This method is shared between the declarative path and could also be called from the imperative path — extracted to avoid duplication.
+   */
+  private _renderApiTokenControl(setting: Setting): void {
+    setting.addComponent(el => new SecretComponent(this.app, el)
+      .setValue(String(this.plugin.settings.apiTokenSecretName))
+      .onChange(async (value) => {
+        this.plugin.settings.apiTokenSecretName = value;
+        await this.plugin.saveSettings();
+      }));
+  }
+
+  // ── Imperative API (Obsidian < 1.13.0) ──────────────────────────────────
 
   /**
    * Renders all settings controls from a single data-driven definition.
@@ -123,25 +213,20 @@ export class HabiticaSyncSettingTab extends PluginSettingTab {
             .setPlaceholder(def.placeholder ?? '')
             .setValue(String(this.plugin.settings[key] ?? ''))
             .onChange(async (value) => {
-              (this.plugin.settings as any)[key] = value;
+              (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
               await this.plugin.saveSettings();
             }));
           break;
 
         case 'secret':
-          setting.addComponent(el => new SecretComponent(this.app, el)
-            .setValue(String(this.plugin.settings.apiTokenSecretName))
-            .onChange(async (value) => {
-              this.plugin.settings.apiTokenSecretName = value;
-              await this.plugin.saveSettings();
-            }));
+          this._renderApiTokenControl(setting);
           break;
 
         case 'toggle':
           setting.addToggle(toggle => toggle
             .setValue(Boolean(this.plugin.settings[key]))
             .onChange(async (value) => {
-              (this.plugin.settings as any)[key] = value;
+              (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
               await this.plugin.saveSettings();
             }));
           break;
@@ -154,7 +239,7 @@ export class HabiticaSyncSettingTab extends PluginSettingTab {
             dropdown
               .setValue(String(this.plugin.settings[key] ?? def.defaultOption ?? ''))
               .onChange(async (value: string) => {
-                (this.plugin.settings as any)[key] = value;
+                (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
                 await this.plugin.saveSettings();
               });
           });
@@ -167,7 +252,7 @@ export class HabiticaSyncSettingTab extends PluginSettingTab {
             .onChange(async (value) => {
               const num = parseInt(value, 10);
               if (!isNaN(num) && num > 0) {
-                (this.plugin.settings as any)[key] = num;
+                (this.plugin.settings as unknown as Record<string, unknown>)[key] = num;
                 await this.plugin.saveSettings();
               } else {
                 new Notice(def.errorMsg ?? 'Must be a positive number');

@@ -90,6 +90,7 @@ function parseTaskFields(
   section: string,
   reverseIndex: Record<string, string>,
   dailyDue: boolean,
+  completed: boolean,
 ): ParsedTaskFields {
   const type = sectionToType(section);
 
@@ -131,8 +132,8 @@ function parseTaskFields(
   // the raw inline-field value and assigns to the accumulator.
   let everyX: number | undefined;
   let repeat: Record<string, boolean> | undefined;
-  let up: boolean | undefined;
-  let down: boolean | undefined;
+  let up: number | undefined;
+  let down: number | undefined;
   let streak: number | undefined;
   let attribute: string | undefined;
   const delete_ = fields.has('delete');
@@ -147,8 +148,8 @@ function parseTaskFields(
 
   everyX = parseFieldFromRegistry(fields, 'everyx') as number | undefined;
   repeat = parseFieldFromRegistry(fields, 'repeat') as Record<string, boolean> | undefined;
-  up = parseFieldFromRegistry(fields, 'up') as boolean | undefined;
-  down = parseFieldFromRegistry(fields, 'down') as boolean | undefined;
+  up = parseFieldFromRegistry(fields, 'up') as number | undefined;
+  down = parseFieldFromRegistry(fields, 'down') as number | undefined;
   streak = parseFieldFromRegistry(fields, 'streak') as number | undefined;
   attribute = parseFieldFromRegistry(fields, 'attribute') as string | undefined;
 
@@ -185,6 +186,7 @@ function parseTaskFields(
     tagIds,
     newTagNames,
     text,
+    completed,
   };
 }
 
@@ -198,8 +200,10 @@ export function parseTaskLine(
   notes: string,
   checklistItems: ChecklistItemParsed[],
 ): NewTaskInput {
-  const rest = line.replace(/^- \[ \]\s*/, '');
-  const f = parseTaskFields(rest, section, reverseIndex, true);
+  const completed = line.trim().startsWith('- [x]') || line.trim().startsWith('- [X]');
+  const rest = line.replace(/^- \[[ xX]\]\s*/, '');
+
+  const f = parseTaskFields(rest, section, reverseIndex, true, completed);
 
   return {
     text: f.text,
@@ -211,6 +215,7 @@ export function parseTaskLine(
     everyX: f.everyX,
     tagIds: f.tagIds,
     newTagNames: f.newTagNames,
+    completed: f.completed,
     notes: notes.trim() ? notes.trim() : undefined,
     checklistItems,
   };
@@ -226,11 +231,12 @@ export function parseManagedTaskLine(
   notes: string,
   checklistItems: ChecklistItemParsed[],
 ): ManagedTaskFields {
+  const completed = line.trim().startsWith('- [x]') || line.trim().startsWith('- [X]');
   const rest = line.replace(/^- \[[ xX]\]\s*/, '');
 
   const id = extractId(rest) ?? '';
 
-  const f = parseTaskFields(rest, section, reverseIndex, false);
+  const f = parseTaskFields(rest, section, reverseIndex, false, completed);
 
   return {
     id,
@@ -248,6 +254,7 @@ export function parseManagedTaskLine(
     delete: f.delete,
     tagIds: f.tagIds,
     newTagNames: f.newTagNames,
+    completed: f.completed,
     notes: notes.trim() ? notes.trim() : undefined,
     checklistItems,
   };

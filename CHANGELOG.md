@@ -7,7 +7,18 @@ tags: []
 links: []
 ---
 
-## [Unreleased] — v1.8.0
+
+## [Unreleased] - Dual-Layer SQLite Architecture
+### Added
+- **SQLite Database Backend**: Replaced pure Markdown-as-database architecture with an embedded SQLite database (`state.sqlite` via `sql.js`) as the local source of truth.
+- **Normalized 3NF Schema**: Adopted Third Normal Form for local database schema, splitting tasks, checklists, tags, and repeat days into relational tables.
+- **ETL Sync Engine**: Replaced imperative loops in `push()` with a declarative ETL pipeline using staging tables (`staging_tasks`, etc.) and computed SQL diffs (`diff_tasks`).
+- **Vitest Testing**: Migrated testing suite to Vitest with custom WASM loaders for `sql.js`, adding comprehensive bijective serialization tests.
+- **Explicit Push/Pull Sync Flow**: `SyncManager` now separates syncing into distinct `pull` and `push` operations to protect local user edits.
+- **Sync Warning Modal**: Prevents accidental overwrites of local edits during automatic pulls by prompting the user to cancel or snooze.
+- **WASM Bundling**: `sql-wasm.wasm` is base64-inlined into the plugin bundle via `esbuild` for maximum platform compatibility (desktop and mobile).
+
+## [1.8.0] - SOLID Rewrite
 
 > **This release represents a near-complete rewrite of the plugin internals.** The original 471-line vanilla javascript monolith has been split into 17 typescript modules across 6 domains (`api/`, `lib/`, `markdown/`, `sync/`, `vault/`, root), with strict type-checking, a serialised API request queue, positional line identity, SecretStorage-backed credentials, and 8 test files covering pure-logic modules.
 

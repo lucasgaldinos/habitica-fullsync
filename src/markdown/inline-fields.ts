@@ -3,16 +3,10 @@
  * Single source of truth for all inline-field regex patterns. Previously these were scattered across 12+ sites in 4 files.
  */
 
+import { InlineFields } from '../types';
+
 /** Matches an inline field token: `[key:: value]` or `[key::]`. Space after `::` is optional. */
 const FIELD_RE = /\[([a-zA-Z]+):: ?([^\]]*)\]/g;
-
-/** Return type for {@link parseInlineFields}. */
-export interface InlineFields {
-  /** Map of field key → value. Keys are always lowercase strings (e.g. `'id'`, `'priority'`, `'due'`). */
-  fields: Map<string, string>;
-  /** The input text with all inline-field tokens removed and whitespace collapsed. */
-  text: string;
-}
 
 /**
  * Parses all `[key:: value]` inline fields from a task line, returning a map of lowercased keys to their values and the cleaned text.

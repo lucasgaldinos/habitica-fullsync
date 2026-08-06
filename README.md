@@ -110,6 +110,7 @@ Sync your Habitica tasks with your Obsidian vault. This plugin pulls your person
 - **SecretStorage-backed API token:**
   API token stored via Obsidian's native `SecretStorage` API (macOS Keychain, Linux libsecret, Windows DPAPI). Never written to `data.json`. Only the secret *name* is persisted.
 
+- **Dual-Layer Architecture**: Uses a local SQLite database (`state.sqlite`) normalized to 3NF as the robust source of truth, while the Markdown file serves as the interactive presentation layer. Pushing local edits utilizes an ETL pipeline with computed SQL diffs.
 - **Field Registry architecture:**
   Single-source-of-truth `FIELD_REGISTRY` defines every task field's parse, render, diff, and API mapping in one place. Adding a field is a one-file change. Consumed by parser, formatter, sync-manager, and API client.
 
@@ -245,8 +246,9 @@ disable → re-enable the plugin (or use the
 
 ### Sync Mechanism
 
-The plugin runs through these steps on every sync:
+The plugin now separates sync into explicit **Push** and **Pull** commands to safely manage the dual-layer state (SQLite cache + Markdown UI):
 
+### Pull from Habitica
 1. **Fetch** all tasks and tags from Habitica (personal + optional group).
 2. **Pre-pass:** scan `habitica-fullsync.md` for checked-off `todo`/`daily` tasks → score them in Habitica. Habits and rewards are excluded from this path (habits are scored via the standard vault completion mechanism).
 3. **Vault scan (opt-in):** if **Scan vault for completed tasks** is enabled, the plugin iterates every `.md` file in the vault. For each file, it checks the file's `mtime` (last-modified timestamp) against a 4-day cutoff. If the file was modified recently, it reads the file and searches for lines matching ALL of:
@@ -257,7 +259,8 @@ The plugin runs through these steps on every sync:
    Matching tasks are scored in Habitica and the vault line is updated with `%%scored%%` to prevent double-scoring. **Disabled by default** — most users only need sync-file scoring (step 2).
 4. **Creation:** for completed vault tasks without an existing Habitica ID (and `disableCreating = false`), create a new Habitica to-do, score it, and write the assigned ID back.
 5. **Markdown creation:** create new Habitica tasks from hand-written `- [ ]` lines in the sync file (see [Creating tasks from markdown](#creating-tasks-from-markdown)).
-6. **Managed-task sync:** for every task line in the sync file that has an `[id::]`:
+### Push to Habitica
+1. **Managed-task sync:** for every task line in the sync file that has an `[id::]`:
    + **Checklist sync:** new checklist items written in the file (indented `- [ ]`) are added to Habitica. Items checked off (`- [x]`) are scored. The sync summary reports both counts (e.g., `— added 2 checklist items — scored 1 checklist item`).
    + **Field updates (manual sync only):** if you edit a task's text, priority, due date, or tags in the Markdown file, those changes are pushed to Habitica. Auto-sync skips field updates — it only does scoring + creation.
 7. **Render** the output document grouped by type (Dailies, To-Dos, Rewards, Habits) with per-type `dataview` query blocks.
@@ -265,7 +268,7 @@ The plugin runs through these steps on every sync:
 
 ### Manual Sync
 
-Use the command palette (`Ctrl+P`) and select **Sync habitica tasks**.
+Use the command palette (`Ctrl+P`) and select **Habitica: Sync both (push then pull)**, **Habitica: Pull from remote**, or **Habitica: Push local changes**.
 
 Manual syncs pass `allowUpdates = true` to the sync engine. This means **field edits** you make in the Markdown file (fixing a typo, changing priority, adjusting a due date, adding/removing tags) are pushed back to Habitica. Checklist items you check off in the file are also scored.
 

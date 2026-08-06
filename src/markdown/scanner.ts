@@ -5,7 +5,7 @@
  */
 
 import { ChecklistItemParsed } from '../types';
-import { extractSubId, stripScoredMarker } from './inline-fields';
+import { extractSubId, stripScoredMarker, stripInlineFields } from './inline-fields';
 
 // -- checklist-item block parser (extracted from the former nested while-loop) --
 
@@ -30,7 +30,7 @@ function readChecklistItemBlock(
   const match = lines[lineIndex].match(CHECK_RE);
   if (!match) return { item: null, endIndex: lineIndex + 1 };
 
-  let text = stripScoredMarker(match[1]).trim();
+  let text = stripInlineFields(stripScoredMarker(match[1]));
   const checked = /^\s{2,}[+\-*] \[[xX]\]/.test(lines[lineIndex]);
   const subId = extractSubId(lines[lineIndex]);
 
@@ -75,7 +75,7 @@ function readChecklistItemBlock(
   }
 
   if (continuationLines.length > 0) {
-    text = text + '\n' + continuationLines.join('\n');
+    text = text + ' ' + continuationLines.join(' ');
   }
 
   return {

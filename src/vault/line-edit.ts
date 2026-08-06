@@ -65,7 +65,7 @@ export function replaceUniqueLine(
   }
   if (matches.length > 1) {
     const indices = matches.map(m => {
-      const upTo = content.slice(0, m.index!);
+      const upTo = content.slice(0, m.index);
       return upTo.split('\n').length - 1;
     });
     throw new Error(
@@ -74,7 +74,7 @@ export function replaceUniqueLine(
   }
 
   return (
-    content.slice(0, matches[0].index!) + newLine + content.slice(matches[0].index! + oldLine.length)
+    content.slice(0, matches[0].index) + newLine + content.slice(matches[0].index + oldLine.length)
   );
 }
 
