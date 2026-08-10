@@ -15,9 +15,6 @@ export default defineConfig(
   globalIgnores([
     'main.js',                  // esbuild bundle output
     'node_modules/',
-    'tests/build-test-bundle.mjs',
-    'esbuild.config.mjs',
-    'eslint.config.mjs',        // self-ignore
     'tsconfig.json',
     'package.json',
     'package-lock.json',
@@ -40,6 +37,8 @@ export default defineConfig(
           allowDefaultProject: [
             'eslint.config.mjs',
             'manifest.json',
+            'esbuild.config.mjs',
+            'vitest.config.ts'
           ],
         },
         tsconfigRootDir: import.meta.dirname,
@@ -68,4 +67,10 @@ export default defineConfig(
       'obsidianmd/platform': 'error',
     },
   },
+  {
+    files: ['tests/**/*.ts'],
+    rules: {
+      'obsidianmd/no-nodejs-modules': 'off'
+    }
+  }
 );

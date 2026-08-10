@@ -1,261 +1,153 @@
-/**
- * Markdown task-line parsers — extract fields from hand-written and managed task lines for Habitica creation and update passes.
- */
-
-import {
-  ChecklistItemParsed,
-  HabiticaTask,
-  ManagedTaskFields,
-  NewTaskInput,
-  ParsedTaskFields,
-} from '../types';
-import { normalizeTagKey, RESERVED_TYPE_TAGS } from './tags';
-import { extractId, parseInlineFields, stripInlineFields, stripScoredMarker } from './inline-fields';
-import { FIELD_REGISTRY } from '../field-registry';
+import { MarkdownState, MarkdownTask } from '../types/markdown';
+import { HabiticaTaskType, HabiticaPriority, HabiticaFrequency, HabiticaAttribute } from '../types/habitica';
 
 /**
- * Extracts a field value from inline fields by delegating to {@link FIELD_REGISTRY}. Looks up the field definition by `inlineKey`, gets the raw value from the parsed fields map, and calls the registry's `parse` function. Returns `undefined` if the field is not in the registry or the raw value is absent.
+ * Parses the raw content of the Habitica sync markdown file.
  */
-function parseFieldFromRegistry(fields: Map<string, string>, inlineKey: string): unknown {
-  const def = FIELD_REGISTRY.find(f => f.inlineKey === inlineKey);
-  if (!def) return undefined;
-  return def.parse(fields.get(inlineKey));
-}
+export function parseMarkdown(content: string): MarkdownState {
+    const state: MarkdownState = {
+        habits: [],
+        dailies: [],
+        todos: [],
+        rewards: []
+    };
 
-/**
- * Maps `[priority:: name]` inline-field values to Habitica numeric priorities.
- */
-export const PRIORITY_NAME_TO_VALUE: Record<string, number> = {
-  high: 2,
-  medium: 1.5,
-  low: 1,
-  lowest: 0.1,
-};
+    // Split by newlines followed by "- [ ]" or "- [x]" or "* [ ]" or "* [x]"
+    // Prepend a newline to make sure the first item splits correctly if it's at the very start
+    const safeContent = '\n' + content.replace(/\r\n/g, '\n');
+    const blocks = safeContent.split(/\n(?=(?:-|\*) \[[ xX]\] )/);
 
-/** Reverse lookup: Habitica numeric priority → display name. */
-export const PRIORITY_VALUE_TO_NAME: Record<string, string> = {
-  '2': 'high',
-  '1.5': 'medium',
-  '1': 'low',
-  '0.1': 'lowest',
-};
+    for (const block of blocks) {
+        const trimmed = block.trim();
+        if (!trimmed.startsWith('- [') && !trimmed.startsWith('* [')) continue;
 
-/**
- * Maps a level-2 section heading from the sync file to a Habitica task type.
- * Returns `undefined` for unrecognised sections — the caller should skip the task and report the unknown section name rather than silently creating to-dos.
- */
-export function sectionToType(section: string): HabiticaTask['type'] | undefined {
-  switch (section.trim().toLowerCase()) {
-    case 'dailies':
-      return 'daily';
-    case 'habits':
-      return 'habit';
-    case 'rewards':
-      return 'reward';
-    case 'to-dos':
-    case 'todos':
-    case 'to dos':
-      return 'todo';
-    default:
-      return undefined;
-  }
-}
+        // The first line is the title, the rest is the body
+        const lines = trimmed.split('\n');
+        const firstLine = lines.shift()!;
+        const bodyLines = lines.join('\n');
 
-/**
- * Strictly validates a `YYYY-MM-DD` date string, rejecting impossible dates.
- */
-export function isValidDateString(s: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
-  const d = new Date(`${s}T00:00:00Z`);
-  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
-}
+        const match = /^(?:-|\*) \[([ xX])\] (.*)$/.exec(firstLine);
+        if (!match) continue;
 
-/**
- * Normalizes a task title for comparison — strips heading markers, inline fields,
- * tags, and `%%scored%%` markers, then collapses whitespace.
- */
-export function cleanTitle(text: string): string {
-  return stripScoredMarker(stripInlineFields(text))
-    .replace(/^#{1,6}\s+/, '')
-    .replace(/#[\p{L}\p{N}_\-/]+/gu, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
+        const completed = match[1].toLowerCase() === 'x';
+        const titleLine = match[2];
 
-/**
- * Shared field extractor for both task-line parsers.
- */
-function parseTaskFields(
-  rest: string,
-  section: string,
-  reverseIndex: Record<string, string>,
-  dailyDue: boolean,
-  completed: boolean,
-): ParsedTaskFields {
-  const type = sectionToType(section);
+        // Extract tags and text from title line
+        const { text, tags, type } = parseTitleLine(titleLine);
+        
+        if (!type) continue; // Not a valid habitica task type
 
-  const { fields } = parseInlineFields(rest);
+        const task = parseTaskBody(text, completed, type, tags, bodyLines);
 
-  let priority: number | undefined;
-  let date: string | undefined;
-  let startDate: string | undefined;
-  let frequency: 'daily' | 'weekly' | 'monthly' | 'yearly' | undefined;
-
-  // due/date/startDate/frequency are interdependent (contextual on task type and dailyDue flag).
-  // They stay as explicit logic; the remaining scalar fields delegate to FIELD_REGISTRY.
-  const dueValue = fields.get('due');
-  if (dueValue === 'none') {
-    date = ''; // sentinel: clear the due date
-  } else if (dueValue && isValidDateString(dueValue)) {
-    if (type === 'todo') date = dueValue;
-    else if (dailyDue && type === 'daily') {
-      startDate = dueValue;
-      frequency = 'daily';
+        switch (type) {
+            case 'habit': state.habits.push(task); break;
+            case 'daily': state.dailies.push(task); break;
+            case 'todo': state.todos.push(task); break;
+            case 'reward': state.rewards.push(task); break;
+        }
     }
-  } else if (dailyDue && type === 'daily') {
-    frequency = 'daily';
-  }
 
-  // Phase 13: explicit recurrence tokens override due-based inference
-  const explicitFrequency = fields.get('frequency');
-  if (explicitFrequency && ['daily', 'weekly', 'monthly', 'yearly'].includes(explicitFrequency.toLowerCase())) {
-    frequency = explicitFrequency.toLowerCase() as 'daily' | 'weekly' | 'monthly' | 'yearly';
-  }
-
-  const explicitStartDate = fields.get('startdate');
-  if (explicitStartDate && isValidDateString(explicitStartDate)) {
-    startDate = explicitStartDate;
-  }
-
-  // Simple scalar fields — delegated to the field registry (F2).
-  // Each registry entry declares its own parse logic; the loop extracts
-  // the raw inline-field value and assigns to the accumulator.
-  let everyX: number | undefined;
-  let repeat: Record<string, boolean> | undefined;
-  let up: number | undefined;
-  let down: number | undefined;
-  let streak: number | undefined;
-  let attribute: string | undefined;
-  const delete_ = fields.has('delete');
-
-  // priority still handled inline for the 'none' sentinel (reset-to-low)
-  const priorityName = fields.get('priority');
-  if (priorityName === 'none') {
-    priority = 1;
-  } else if (priorityName && priorityName in PRIORITY_NAME_TO_VALUE) {
-    priority = PRIORITY_NAME_TO_VALUE[priorityName.toLowerCase()];
-  }
-
-  everyX = parseFieldFromRegistry(fields, 'everyx') as number | undefined;
-  repeat = parseFieldFromRegistry(fields, 'repeat') as Record<string, boolean> | undefined;
-  up = parseFieldFromRegistry(fields, 'up') as number | undefined;
-  down = parseFieldFromRegistry(fields, 'down') as number | undefined;
-  streak = parseFieldFromRegistry(fields, 'streak') as number | undefined;
-  attribute = parseFieldFromRegistry(fields, 'attribute') as string | undefined;
-
-  const tagIds: string[] = [];
-  const newTagNames: string[] = [];
-  const seenTagKeys = new Set<string>();
-  const tagMatches = rest.match(/#[\p{L}\p{N}_\-/]+/gu) || [];
-  for (const tag of tagMatches) {
-    const body = tag.slice(1);
-    const key = normalizeTagKey(body);
-    if (RESERVED_TYPE_TAGS.has(key)) continue;
-    if (seenTagKeys.has(key)) continue;
-    seenTagKeys.add(key);
-    const existingId = reverseIndex[key];
-    if (existingId) tagIds.push(existingId);
-    else newTagNames.push(body.replace(/-/g, ' '));
-  }
-
-  const text = cleanTitle(rest);
-
-  return {
-    type,
-    priority,
-    date,
-    startDate,
-    frequency,
-    everyX,
-    repeat,
-    up,
-    down,
-    streak,
-    attribute,
-    delete: delete_,
-    tagIds,
-    newTagNames,
-    text,
-    completed,
-  };
+    return state;
 }
 
-/**
- * Parses a hand-written markdown task line (no `[id::]`) into a {@link NewTaskInput}.
- */
-export function parseTaskLine(
-  line: string,
-  section: string,
-  reverseIndex: Record<string, string>,
-  notes: string,
-  checklistItems: ChecklistItemParsed[],
-): NewTaskInput {
-  const completed = line.trim().startsWith('- [x]') || line.trim().startsWith('- [X]');
-  const rest = line.replace(/^- \[[ xX]\]\s*/, '');
+function parseTitleLine(titleLine: string): { text: string, tags: string[], type: HabiticaTaskType | null } {
+    const tagsRegex = /#([\w-]+)/g;
+    const tags: string[] = [];
+    let type: HabiticaTaskType | null = null;
+    
+    let match;
+    while ((match = tagsRegex.exec(titleLine)) !== null) {
+        const tag = match[1].toLowerCase();
+        tags.push(tag);
+        
+        if (['habit', 'daily', 'todo', 'reward'].includes(tag)) {
+            type = tag as HabiticaTaskType;
+        }
+    }
 
-  const f = parseTaskFields(rest, section, reverseIndex, true, completed);
-
-  return {
-    text: f.text,
-    type: f.type,
-    priority: f.priority,
-    date: f.date,
-    startDate: f.startDate,
-    frequency: f.frequency,
-    everyX: f.everyX,
-    tagIds: f.tagIds,
-    newTagNames: f.newTagNames,
-    completed: f.completed,
-    notes: notes.trim() ? notes.trim() : undefined,
-    checklistItems,
-  };
+    const text = titleLine.replace(tagsRegex, '').trim();
+    return { text, tags, type };
 }
 
-/**
- * Parses a managed task line (has `[id:: ...]`) into a {@link ManagedTaskFields}.
- */
-export function parseManagedTaskLine(
-  line: string,
-  section: string,
-  reverseIndex: Record<string, string>,
-  notes: string,
-  checklistItems: ChecklistItemParsed[],
-): ManagedTaskFields {
-  const completed = line.trim().startsWith('- [x]') || line.trim().startsWith('- [X]');
-  const rest = line.replace(/^- \[[ xX]\]\s*/, '');
+function parseTaskBody(text: string, completed: boolean, type: HabiticaTaskType, tags: string[], bodyLines: string): MarkdownTask {
+    const task: MarkdownTask = {
+        text,
+        completed,
+        type,
+        tags,
+        rawInlineFields: {}
+    };
 
-  const id = extractId(rest) ?? '';
+    const lines = bodyLines.split('\n');
+    let inNote = false;
+    let notes: string[] = [];
 
-  const f = parseTaskFields(rest, section, reverseIndex, false, completed);
+    for (const line of lines) {
+        const trimmed = line.trim();
+        
+        if (!trimmed) continue;
 
-  return {
-    id,
-    text: f.text,
-    priority: f.priority,
-    date: f.date,
-    frequency: f.frequency,
-    everyX: f.everyX,
-    repeat: f.repeat,
-    startDate: f.startDate,
-    up: f.up,
-    down: f.down,
-    streak: f.streak,
-    attribute: f.attribute,
-    delete: f.delete,
-    tagIds: f.tagIds,
-    newTagNames: f.newTagNames,
-    completed: f.completed,
-    notes: notes.trim() ? notes.trim() : undefined,
-    checklistItems,
-  };
+        // Parse Note Blockquote
+        if (trimmed.toLowerCase().startsWith('> [!note]')) {
+            inNote = true;
+            continue;
+        }
+        
+        if (inNote) {
+            if (trimmed.startsWith('>')) {
+                notes.push(trimmed.substring(1).trim());
+                continue;
+            } else {
+                inNote = false; // Exited the note block
+            }
+        }
+
+        // Parse Checklists (usually indented with + [ ] or - [ ])
+        const checklistMatch = /^(?:[+\-*]) \[([ xX])\] (.*)$/.exec(trimmed);
+        if (checklistMatch) {
+            if (!task.checklist) task.checklist = [];
+            task.checklist.push({
+                completed: checklistMatch[1].toLowerCase() === 'x',
+                text: checklistMatch[2].trim()
+            });
+            continue;
+        }
+
+        // Parse Inline Fields [key:: value]
+        const inlineFieldRegex = /\[(\w+)::\s*([^\]]+)\]/g;
+        let fieldMatch;
+        while ((fieldMatch = inlineFieldRegex.exec(line)) !== null) {
+            const key = fieldMatch[1];
+            const value = fieldMatch[2].trim();
+            task.rawInlineFields[key] = value;
+            mapInlineFieldToTask(task, key, value);
+        }
+    }
+
+    if (notes.length > 0) {
+        task.notes = notes.join('\n');
+    }
+
+    return task;
+}
+
+function mapInlineFieldToTask(task: MarkdownTask, key: string, value: string) {
+    if (key === 'id') task.id = value;
+    if (key === 'priority') {
+        const val = value.toLowerCase();
+        if (val === 'trivial') task.priority = 0.1;
+        else if (val === 'easy' || val === 'low') task.priority = 1;
+        else if (val === 'medium') task.priority = 1.5;
+        else if (val === 'hard' || val === 'high') task.priority = 2;
+        else {
+            const num = parseFloat(val);
+            if (!isNaN(num)) task.priority = num as HabiticaPriority;
+        }
+    }
+    if (key === 'due' || key === 'date') task.due = value;
+    if (key === 'frequency') task.frequency = value as HabiticaFrequency;
+    if (key === 'up') task.up = value === 'true';
+    if (key === 'down') task.down = value === 'true';
+    if (key === 'value') task.value = parseFloat(value);
+    if (key === 'attribute') task.attribute = value as HabiticaAttribute;
 }

@@ -1,225 +1,165 @@
-import { Notice, Plugin } from 'obsidian';
-import { HabiticaApiClient } from './api/api-client';
-import { isMobilePlatform, shouldAutoSync } from './lib/platform';
-import { DEFAULT_SETTINGS, HabiticaSyncSettingTab } from './settings';
+import { Plugin, Notice, TFile } from 'obsidian';
+import { HabiticaSyncSettingTab } from './settings';
+import { HabiticaSyncSettings, DEFAULT_SETTINGS, IPluginSettingsHost } from './types/habitica';
+import { HabiticaApiClient } from './api/client';
 import { SyncManager } from './sync/sync-manager';
-import { PluginSettings } from './types';
-import { VaultHandler } from './vault/vault-handler';
-import { SQLiteStore } from './db/sqlite-store';
-
-const IS_DEBUG = process.env.NODE_ENV === 'development';
+import { promptConflictResolution } from './sync/conflict-modal';
 
 /**
- * Main Obsidian plugin class for Habitica Full Sync.
- *
- * Responsibilities (SRP — orchestration only):
- * 1. Load/save settings (delegates defaults to {@link DEFAULT_SETTINGS}).
- * 2. Wire up API client, vault handler, and sync manager.
- * 3. Register the command-palette command and settings tab.
- * 4. Start/stop the auto-sync interval.
- *
- * Settings UI lives in {@link HabiticaSyncSettingTab} (`./settings.ts`). Domain helpers live in `./platform.ts`, `./tags.ts`, `./scanner.ts`, `./dataview.ts`, `./formatter.ts`, `./parser.ts`.
+ * Main entry point for the Habitica Fullsync Plugin.
  */
-export default class HabiticaSyncFullPlugin extends Plugin {
-  declare settings: PluginSettings;
-  private apiClient!: HabiticaApiClient;
-  private vaultHandler!: VaultHandler;
-  private sqliteStore!: SQLiteStore;
-  private syncManager!: SyncManager;
-  /** Handle returned by `setInterval` for the auto-sync timer. `undefined` when auto-sync is off. */
-  private autoSyncInterval?: number;
-  private statusBarItem!: HTMLElement;
+export default class HabiticaSyncPlugin extends Plugin implements IPluginSettingsHost {
+    /** The global plugin settings */
+    pluginSettings!: HabiticaSyncSettings;
+    /** The API client for communicating with Habitica */
+    apiClient!: HabiticaApiClient;
+    /** The manager orchestrating the sync between Markdown and Habitica */
+    syncManager!: SyncManager;
 
-  async onload(): Promise<void> {
-    await this.loadSettings();
+    /**
+     * Called when the plugin is loaded by Obsidian.
+     */
+    async onload() {
+        await this.loadSettings();
+        this.addSettingTab(new HabiticaSyncSettingTab(this.app, this));
 
-    const apiToken = await this._resolveApiToken();
-    this.apiClient = new HabiticaApiClient(this.settings.apiUser, apiToken, {
-      debug: IS_DEBUG,
-    });
-    this.vaultHandler = new VaultHandler(this.app);
-    this.sqliteStore = new SQLiteStore(this.app);
-    
-    await this.sqliteStore.init();
+        // Re-instantiated during sync or settings save
+        this.apiClient = new HabiticaApiClient({
+            userId: this.pluginSettings.userId,
+            apiToken: '' // Token fetched dynamically during sync
+        });
 
-    this.syncManager = new SyncManager(
-      this.apiClient,
-      this.vaultHandler,
-      this.settings,
-      this.sqliteStore,
-      this.app,
-      msg => new Notice(msg)
-    );
+        this.syncManager = new SyncManager(
+            this.app.vault,
+            `${this.app.vault.configDir}/plugins/${this.manifest.id}`,
+            this.apiClient,
+            (local, remote) => promptConflictResolution(this.app, local, remote)
+        );
 
-    this.addCommand({
-      id: 'pull-habitica',
-      name: 'Habitica: Pull from remote',
-      callback: () => this.pullHabitica()
-    });
+        // Ribbon Icon
+        this.addRibbonIcon('refresh-cw', 'Sync Habitica tasks', async () => {
+            await this.performSync();
+        });
 
-    this.addCommand({
-      id: 'push-habitica',
-      name: 'Habitica: Push local changes',
-      callback: () => this.pushHabitica()
-    });
-
-    this.addCommand({
-      id: 'sync-both-habitica',
-      name: 'Habitica: Sync both (push then pull)',
-      callback: () => this.syncBothHabitica()
-    });
-
-    this.addSettingTab(new HabiticaSyncSettingTab(this.app, this));
-    this.addRibbonIcon('refresh-cw', 'Sync Habitica tasks', () => this.syncBothHabitica());
-    this.statusBarItem = this.addStatusBarItem();
-    this.statusBarItem.setText('🔄 Ready');
-    this.app.workspace.onLayoutReady(() => this._scheduleAutoSync());
-
-    this.registerEvent(
-      this.app.metadataCache.on('changed', (file) => {
-        this.vaultHandler.onFileChanged(file);
-      })
-    );
-  }
-
-  onunload(): void {
-    if (this.sqliteStore) {
-      void this.sqliteStore.close();
+        // Command Palette
+        this.addCommand({
+            id: 'sync-habitica-tasks',
+            name: 'Sync Habitica tasks',
+            callback: async () => {
+                await this.performSync();
+            }
+        });
     }
-  }
 
-  /** Starts or restarts the auto-sync interval based on current settings. */
-  private _scheduleAutoSync(): void {
-    if (this.autoSyncInterval) {
-      window.clearInterval(this.autoSyncInterval);
-      this.autoSyncInterval = undefined;
+    /**
+     * Called when the plugin is unloaded.
+     */
+    onunload() {
+        // Nothing to clean up currently
     }
-    const platformSetting = this.settings.autoSyncPlatform || 'both';
-    if (this.settings.autoSync && shouldAutoSync(platformSetting, isMobilePlatform())) {
-      this.autoSyncInterval = window.setInterval(
-        () => { void this.pullHabitica(true); },
-        this.settings.syncInterval * 60 * 1000,
-      );
-      this.registerInterval(this.autoSyncInterval);
+
+    /**
+     * Loads settings from the vault's data.json file.
+     */
+    async loadSettings() {
+        const data: unknown = await this.loadData();
+        this.pluginSettings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<HabiticaSyncSettings>);
     }
-  }
 
-  /**
-   * Loads settings from Obsidian's data store, merging stored values over {@link DEFAULT_SETTINGS}.
-   * @returns A promise that resolves when settings are loaded.
-   */
-  async loadSettings(): Promise<void> {
-    const stored = await this.loadData() as Partial<PluginSettings> | undefined;
-    this.settings = { ...DEFAULT_SETTINGS, ...stored };
-  }
-
-  /** 
-   * Resolves the actual API token from SecretStorage. Awaiting handles both sync and async {@link SecretStorage} implementations — no-op on a string, correct on a Promise.
-   * @returns The resolved API token string.
-   */
-  private async _resolveApiToken(): Promise<string> {
-    const name = this.settings.apiTokenSecretName;
-    if (!name) {
-      new Notice('Habitica full sync: API token not configured.');
-      return '';
+    /**
+     * Saves settings to the vault's data.json file.
+     */
+    async saveSettings() {
+        await this.saveData(this.pluginSettings);
     }
-    const token = this.app.secretStorage.getSecret(name) ?? '';
-    if (!token) {
-      new Notice('Habitica full sync: Could not read API token.');
-    }
-    return token;
-  }
 
-  /**
-   * Persists settings and conditionally rebuilds the API client. The API client + SyncManager are only reconstructed when credentials actually change.
-   * @returns A promise that resolves when settings are saved.
-   */
-  async saveSettings(): Promise<void> {
-    const oldUser = this.apiClient?.userId;
-    const oldToken = this.apiClient?.apiToken;
-
-    await this.saveData(this.settings);
-
-    const newToken = await this._resolveApiToken();
-    if (this.settings.apiUser !== oldUser || newToken !== oldToken) {
-      this.apiClient = new HabiticaApiClient(this.settings.apiUser, newToken, {
-        debug: IS_DEBUG,
-      });
-      this.syncManager = new SyncManager(
-        this.apiClient,
-        this.vaultHandler,
-        this.settings,
-        this.sqliteStore,
-        this.app,
-        msg => new Notice(msg)
-      );
-    }
-    this._scheduleAutoSync();
-  }
-
-  /**
-   * Triggers a pull from Habitica to Obsidian.
-   * @param isAutoSync When `true`, indicates the pull was triggered by the background interval. Defaults to `false`.
-   * @returns A promise that resolves when the pull completes.
-   */
-  async pullHabitica(isAutoSync = false): Promise<void> {
-    this.statusBarItem.setText('⏳ Pulling…');
-    try {
-      const result = await this.syncManager.pull(isAutoSync);
-      if (result === 'completed') {
-        this.statusBarItem.setText('✅ Pulled');
-      } else if (result === 'snoozed') {
-        this.statusBarItem.setText('💤 Snoozed');
-        // Pause auto sync by clearing interval and scheduling it again in 1 hr
-        if (this.autoSyncInterval) {
-          window.clearInterval(this.autoSyncInterval);
-          this.autoSyncInterval = undefined;
-          window.setTimeout(() => this._scheduleAutoSync(), 60 * 60 * 1000);
+    /**
+     * Fetches the API token securely and instantiates a new ApiClient.
+     * @returns A boolean indicating success or failure.
+     */
+    private async prepareApiClient(): Promise<boolean> {
+        if (!this.pluginSettings.userId || !this.pluginSettings.apiTokenSecretName) {
+            new Notice('Habitica sync: Please configure your user ID and API token in settings.');
+            return false;
         }
-      } else {
-        this.statusBarItem.setText('🔄 Ready');
-      }
-    } catch (err) {
-      this.statusBarItem.setText('❌ Pull failed');
-      throw err;
-    }
-  }
 
-  /**
-   * Pushes local task changes from Obsidian to Habitica.
-   * @returns A promise that resolves when the push completes.
-   */
-  async pushHabitica(): Promise<void> {
-    this.statusBarItem.setText('⏳ Pushing…');
-    try {
-      const result = await this.syncManager.push();
-      if (result === 'completed') {
-        this.statusBarItem.setText('✅ Pushed');
-        // Reset snooze if pushed manually
-        this._scheduleAutoSync();
-      } else {
-        this.statusBarItem.setText('🔄 Ready');
-      }
-    } catch (err) {
-      this.statusBarItem.setText('❌ Push failed');
-      throw err;
-    }
-  }
+        try {
+            // NOTE: SecretStorage requires Obsidian 1.11.4+
+            interface AppWithSecret {
+                secretStorage?: {
+                    getSecret(key: string): Promise<string | null>;
+                };
+            }
+            const appSecret = this.app as unknown as AppWithSecret;
+            const token = await appSecret.secretStorage?.getSecret(this.pluginSettings.apiTokenSecretName);
+            
+            if (!token) {
+                new Notice('Habitica sync: API token is empty or missing from SecretStorage. Please set it in settings.');
+                return false;
+            }
 
-  /**
-   * Triggers a full Habitica ↔ Obsidian sync (push then pull).
-   * @returns A promise that resolves when both push and pull complete.
-   */
-  async syncBothHabitica(): Promise<void> {
-    this.statusBarItem.setText('⏳ Syncing…');
-    try {
-      await this.syncManager.push();
-      await this.syncManager.pull();
-      this.statusBarItem.setText('✅ Synced');
-      this._scheduleAutoSync();
-    } catch (err) {
-      this.statusBarItem.setText('❌ Sync failed');
-      throw err;
+            this.apiClient = new HabiticaApiClient({
+                userId: this.pluginSettings.userId,
+                apiToken: token
+            });
+            this.syncManager = new SyncManager(
+                this.app.vault,
+                `${this.app.vault.configDir}/plugins/${this.manifest.id}`,
+                this.apiClient,
+                (local, remote) => promptConflictResolution(this.app, local, remote)
+            );
+            return true;
+        } catch {
+            new Notice('Habitica sync: Failed to read API token from SecretStorage.');
+            return false;
+        }
     }
-  }
+
+    /**
+     * Orchestrates the task synchronization process.
+     */
+    private async performSync() {
+        const isPrepared = await this.prepareApiClient();
+        if (!isPrepared) return;
+
+        const syncFilePath = this.pluginSettings.syncFilePath;
+        let file = this.app.vault.getAbstractFileByPath(syncFilePath);
+
+        if (!file || !(file instanceof TFile)) {
+            // Create the file if it doesn't exist
+            try {
+                // ensure parent folders exist
+                const parts = syncFilePath.split('/');
+                let currentPath = '';
+                for (let i = 0; i < parts.length - 1; i++) {
+                    currentPath += parts[i] + '/';
+                    const folder = this.app.vault.getAbstractFileByPath(currentPath.slice(0, -1));
+                    if (!folder) {
+                        await this.app.vault.createFolder(currentPath.slice(0, -1));
+                    }
+                }
+                file = await this.app.vault.create(syncFilePath, '# Habitica Sync\n\n');
+                new Notice(`Created new sync file at ${syncFilePath}`);
+            } catch (err) {
+                console.error(err);
+                new Notice(`Failed to create sync file at ${syncFilePath}`);
+                return;
+            }
+        }
+
+        if (file instanceof TFile) {
+            try {
+                new Notice('Habitica sync started...');
+                await this.syncManager.sync(file);
+                new Notice('Habitica sync complete!');
+            } catch (error) {
+                console.error(error);
+                if (error instanceof Error) {
+                    new Notice(`Habitica Sync Failed: ${error.message}`);
+                } else {
+                    new Notice('Habitica sync failed with unknown error.');
+                }
+            }
+        }
+    }
 }

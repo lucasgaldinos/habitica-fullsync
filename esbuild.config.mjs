@@ -39,7 +39,6 @@ format: "cjs",
 target: "es2018",
 logLevel: "info",
 sourcemap: prod ? false : "inline",
-loader: { '.wasm': 'base64' },
 treeShaking: true,
 outfile: "main.js",
 });

@@ -54,70 +54,70 @@ links:
 ### Architecture / SOLID
 
 - [x] **`SyncManager.sync()` decomposed.** ✅ Split into 5 step methods.
-  + `src/sync-manager.ts`
+  - `src/sync-manager.ts`
 
 - [x] **Nested function `updateTaskChecklistInMemory` defined inside `_syncManagedTasks()`.** ✅ Extracted to private method `_updateTaskChecklistInMemory(ctx, taskId, checklist)` (2026-07-29).
-  + `src/sync-manager.ts`
+  - `src/sync-manager.ts`
 
 - [x] **`escapeRegExp` defined in `vault-handler.ts` and re-exported from `helpers.ts`.** ✅ OBE: `helpers.ts` barrel file deleted (2026-07-29). `escapeRegExp` stays in `vault-handler.ts` — it is used only there.
-  + `src/vault-handler.ts`
+  - `src/vault-handler.ts`
 
 ### DRY
 
 - [x] **Tag-creation loop (`newTagNames` → `createTag` → update maps) appears verbatim in two places** (creation pass and update pass in `sync()`). ✅ Extracted to `_createTagsAndRegister()` private method (2026-07-29).
-  + `src/sync-manager.ts`
+  - `src/sync-manager.ts`
 
 ### Code Smells
 
 - [x] **Magic number `4` in `cutoffDate.setDate(cutoffDate.getDate() - 4)`.** ✅ Replaced with `this.settings.completionLookbackDays` — user-configurable via settings UI (2026-07-29).
-  + `src/sync-manager.ts:60`, `src/types.ts`, `src/settings.ts`
+  - `src/sync-manager.ts:60`, `src/types.ts`, `src/settings.ts`
 
 - [x] **Magic number `30` in `for (let i = 0; i < 30; i++)` (weekly daily-due scan).** ✅ Replaced with `MAX_WEEKLY_LOOKAHEAD_DAYS = 30` constant (2026-07-29).
-  + `src/formatter.ts:83`
+  - `src/formatter.ts:83`
 
 ### Type Safety
 
 - [x] **`json = (await res.json()) as { ... }` — cast assumes response shape.** ✅ Added runtime type-guard: checks `typeof json === 'object'` and `typeof json.success === 'boolean'` before accessing `.success` (2026-07-29).
-  + `src/api-client.ts:95`
+  - `src/api-client.ts:95`
 
 - [x] **`new Date(task.startDate!)` — non-null assertion `!`.** ✅ Replaced with `(task.startDate ?? '')` fallback + UTC suffix.
-  + `src/formatter.ts`
+  - `src/formatter.ts`
 
 ### Error Handling
 
 - [x] **Group-task fetch failure is caught and logged, but the user sees no notice.** ✅ Now shows `this.noticeFn('⚠️ Failed to fetch group tasks…')` so the user knows the sync is partial (2026-07-29).
-  + `src/sync-manager.ts:103–106`
+  - `src/sync-manager.ts:103–106`
 
 - [x] **Completed-vault-task creation failure is caught and logged; task never retried.** ✅ Scoring failures (all three paths) now tracked in `ctx.scoreFailures` and surfaced in the sync summary notice (2026-07-29).
-  + `src/sync-manager.ts:148–155`, `src/types.ts`
+  - `src/sync-manager.ts:148–155`, `src/types.ts`
 
 - [x] **Three vault-handler methods silently `catch {}`.** ✅ Now log errors via `console.error`.
-  + `src/vault-handler.ts`
+  - `src/vault-handler.ts`
 
 - [x] **`updateLineInFile` swallows errors.** ✅ Now throws; caller catches with duplicate-task warning.
-  + `src/vault-handler.ts`, `src/sync-manager.ts`
+  - `src/vault-handler.ts`, `src/sync-manager.ts`
 
 - [x] **`rateLimitedFetch` retries only on 429.** ✅ Now retries 502/503/504 + network failures.
-  + `src/api-client.ts`
+  - `src/api-client.ts`
 
 ### Potential Bugs
 
 - [x] **Task text truncation: `task.line.split(' [')[0]` splits on `[` to remove inline fields.** ✅ Replaced with `cleanTitle`-style field-stripping regex `/\[[a-zA-Z]+:: [^\]]*\]/g` — properly handles titles containing literal `[` (2026-07-29).
-  + `src/sync-manager.ts`
+  - `src/sync-manager.ts`
 
 - [x] **UTC date ambiguity.** ✅ Fixed with `T00:00:00Z` suffix in `getNextDailyDueDate` and `getRecentCompletedTasks`.
-  + `src/formatter.ts`, `src/vault-handler.ts`
+  - `src/formatter.ts`, `src/vault-handler.ts`
 
 - [x] **Duplicate `#daily`/`#habit`/`#reward` tags possible** ✅ Added `!tags.includes('#daily')` guards before pushing type tags — dedup now covers both user tags and type tags (2026-07-29).
-  + `src/formatter.ts:119–121`
+  - `src/formatter.ts:119–121`
 
 ### Security
 
 - [x] **API token stored unencrypted** ✅ Replaced with Obsidian's native `SecretStorage` API (1.11.4) — token stored in OS credential store, never written to `data.json`. `SecretComponent` in settings UI. No migration needed (no published users) (2026-07-29).
-  + `src/settings.ts`, `src/main.ts`, `src/types.ts`, `manifest.json`
+  - `src/settings.ts`, `src/main.ts`, `src/types.ts`, `manifest.json`
 
 - [x] **Raw task line logged via `console.warn`.** ✅ Now truncated to 80 chars with `…` suffix — enough for debugging without exposing full content (2026-07-29). Also applied to the `vault-handler.ts` instance.
-  + `src/sync-manager.ts`, `src/vault-handler.ts`
+  - `src/sync-manager.ts`, `src/vault-handler.ts`
 
 ---
 
@@ -251,28 +251,28 @@ A single `FIELD_REGISTRY: FieldDefinition[]` replaces:
 ### Sub-tasks ✅ Completed 2026-08-01
 
 - [x] **F1 — Create `src/field-registry.ts`**: define `FieldDefinition` interface and `FIELD_REGISTRY` constant. Port all 12 existing fields (now 14 including `text` and `delete`). Include JSDoc for each field documenting the API behavior. ~364 lines.
-  + `src/field-registry.ts` (new)
+  - `src/field-registry.ts` (new)
 - [x] **F2 — Adopt in `parser.ts:parseTaskFields()`**: replaced the 85-line `if (fields.get('priority'))` / `if (fields.get('due'))` / … chain with `parseFieldFromRegistry()` calls delegating to the registry. Context-dependent fields (due/date/startDate/frequency) kept as explicit logic — correct design choice given typescript's inability to map union-typed keys cleanly. ~6 calls replaced.
-  + `src/markdown/parser.ts`
+  - `src/markdown/parser.ts`
 - [x] **F3 — Adopt in `formatter.ts:formatTaskLine()`**: deleted `OPTIONAL_FIELD_RENDERERS` array, `FieldRenderer` type, and `WEEKDAY_KEYS` const. Replaced with `for (const def of FIELD_REGISTRY)` loop with `CORE_RENDERED_KEYS` skip-set. ~22 lines deleted, ~6 lines added.
-  + `src/markdown/formatter.ts`
+  - `src/markdown/formatter.ts`
 - [x] **F4 — Adopt in `sync-manager.ts:_syncManagedTasks()`**: replaced the 8 `_setIfChanged()` calls with `for (const def of FIELD_REGISTRY)` loop. Sentinel fields skipped. `tags`→`tagIds` key mapping for ManagedTaskFields impedance match. ~55 lines → 12 lines.
-  + `src/sync/sync-manager.ts`
+  - `src/sync/sync-manager.ts`
 - [x] **F5 — Adopt in `api-client.ts`**: `createTask` and `updateTask` body construction iterate `FIELD_REGISTRY`. Sentinels, stringSet, text, and notes skipped (handled explicitly). `TaskMutateFields` type deleted.
-  + `src/api/api-client.ts`
+  - `src/api/api-client.ts`
 - [x] **F6 — Verify**: `npm test` (61 tests), `npm run build` (tsc + esbuild), manual sync diff-equivalence verified.
 - [x] **F7 — Cleanup**: `OPTIONAL_FIELD_RENDERERS` deleted. `_setIfChanged()` deleted. `TaskMutateFields` deleted. `FieldRenderer` type deleted. `WEEKDAY_KEYS` moved to field-registry.ts.
 
 ### Related shotgun surgery items ✅ Completed 2026-08-01
 
 - [x] **S1 — `HabiticaApiClient` input type duplication**: extracted `CreateTaskInput` and `UpdateTaskInput` exported interfaces from the formerly inline parameter types. Both now live at module level in `api-client.ts`. ~25 lines of inline type declarations replaced with 2 named interfaces.
-  + `src/api/api-client.ts`
+  - `src/api/api-client.ts`
 - [x] **S2 — `filterActive` called 8 times in `_renderAndWrite`**: `_partitionTasksByType()` pre-computes all 8 buckets. `_renderAndWrite` uses `sectionDefs` array loop instead of 8 individual destructured variables.
-  + `src/sync/sync-manager.ts:_renderAndWrite`
+  - `src/sync/sync-manager.ts:_renderAndWrite`
 - [x] **S3 — `SyncReport.renderSummary()` pluralization boilerplate**: replaced 7 `if (this.X > 0)` blocks with data-driven `parts: Array<[number, string, string?]>` + single `for` loop. ~40 lines → ~25 lines.
-  + `src/sync/sync-report.ts`
+  - `src/sync/sync-report.ts`
 - [x] **S4 — `updateLineInFile` duplicates `updateLine` logic**: `updateLineInFile` deleted. `updateLine` unified to accept `TFile | string`. `_readContent` and `_writeContent` shared helpers extracted; `writeFile` also delegates to `_writeContent`. ~75 lines removed.
-  + `src/vault/vault-handler.ts`
+  - `src/vault/vault-handler.ts`
 
 ---
 
@@ -283,37 +283,37 @@ The plugin currently imports from `'obsidian'` in only 3 files: `main.ts` (`Plug
 ### High impact (should implement) ✅ Completed 2026-08-01
 
 - [x] **O1 — Use `requestUrl` instead of raw `fetch`**: Obsidian's `requestUrl` handles CORS, mobile network proxies, and has built-in timeout/retry behavior. The plugin makes external API calls as its *primary function*. Replace `window.fetch` in `rateLimitedFetch` with `requestUrl`. Requires `minAppVersion` ≥ 0.13.0 (we're at 1.11.4). The response shape differs slightly (`requestUrl` returns `{ status, headers, text, json }`) — the `_parseResponse` method needs adaptation. ~30 lines changed.
-  + `src/api/api-client.ts:rateLimitedFetch`
-  + `manifest.json` (verify minAppVersion supports requestUrl)
+  - `src/api/api-client.ts:rateLimitedFetch`
+  - `manifest.json` (verify minAppVersion supports requestUrl)
 - [x] **O2 — Wrap first auto-sync in `Workspace.onLayoutReady()`**: the current `onload()` starts auto-sync immediately, before `metadataCache` may be populated. The Obsidian docs explicitly recommend gating first sync on layout readiness. The fix is a one-line wrap. This is a real race condition, not theoretical — users who open Obsidian with many files will have incomplete vault scans on first sync.
-  + `src/main.ts:onload()`
+  - `src/main.ts:onload()`
 - [x] **O3 — Add ribbon icon for manual sync trigger**: `Plugin.addRibbonIcon('refresh-cw', 'Sync Habitica tasks', () => this.syncHabitica(true))`. Standard Obsidian UX convention. Every other sync plugin has one. 5 lines.
-  + `src/main.ts:onload()`
+  - `src/main.ts:onload()`
 - [x] **O4 — Add status bar item for sync state**: show "⏳ Syncing…" while `_syncInFlight`, "✅ Synced just now" after completion, "❌ Sync failed" on error. `sync()` returns a status string (`'completed' | 'skipped-in-flight' | 'skipped-cooldown'`) so the status bar doesn't lie when sync is skipped. ~35 lines.
-  + `src/main.ts` (new private fields + status bar item management)
-  + `src/sync/sync-manager.ts` (sync() return type changed from void to string)
+  - `src/main.ts` (new private fields + status bar item management)
+  - `src/sync/sync-manager.ts` (sync() return type changed from void to string)
 
 ### Medium impact (nice to have) ✅ Completed 2026-08-01
 
 - [x] **O5 — Use `normalizePath()` for all path construction**: replace template literals like `${outputFolder}/habitica-fullsync.md` with `normalizePath(`${outputFolder}/habitica-fullsync.md`)`. Prevents cross-platform path bugs (Windows backslash, double slashes). Obsidian internally normalizes but the API contract says callers should normalize. ~8 lines across 2 files.
-  + `src/sync/sync-manager.ts` (filePath construction)
-  + `src/vault/vault-handler.ts` (path arguments)
+  - `src/sync/sync-manager.ts` (filePath construction)
+  - `src/vault/vault-handler.ts` (path arguments)
 - [x] **O6 — Subscribe to `MetadataCache.on('changed')` for incremental vault scanning**: instead of rescanning every `.md` file on every sync, maintain a `Set<string>` of recently modified files by subscribing to cache change events. The full scan still runs when the set is empty as a consistency check. ~20 lines.
-  + `src/vault/vault-handler.ts` (new subscription in constructor or on init)
-  + `src/main.ts` (register/unregister event)
+  - `src/vault/vault-handler.ts` (new subscription in constructor or on init)
+  - `src/main.ts` (register/unregister event)
 - [x] **O7 — Use `Plugin.registerEvent()` for automatic cleanup**: replace manual `window.clearInterval` in `onunload` with `this.registerEvent()` calls for interval handles and future MetadataCache subscriptions. The framework does the cleanup — fewer lines, fewer leaks. ~5 lines changed.
-  + `src/main.ts:_scheduleAutoSync`
+  - `src/main.ts:_scheduleAutoSync`
 - [x] **O8 — Use `FileManager.trashFile()` if we ever add a "delete sync file" feature**: respects user's trash preferences (system trash vs `.trash/` folder). Currently no deletion feature exists, but if one is added, don't use `adapter.remove` — use `trashFile`.
-  + Future feature — documented for awareness. No code change needed.
+  - Future feature — documented for awareness. No code change needed.
 
 ### Low impact (documented for awareness) ✅ All addressed 2026-08-01
 
 - [x] **O9 — `requireApiVersion('1.11.4')` guard at plugin load**: fails fast with a clear message if the plugin is loaded on an older Obsidian version. Currently we just set `minAppVersion` in `manifest.json` and hope for the best. ~3 lines.
-  + Skipped — `requireApiVersion` is not exported from the `obsidian` package types. `minAppVersion` in `manifest.json` already enforces this at the Obsidian plugin loader level.
+  - Skipped — `requireApiVersion` is not exported from the `obsidian` package types. `minAppVersion` in `manifest.json` already enforces this at the Obsidian plugin loader level.
 - [x] **O10 — `FileManager.generateMarkdownLink()` for task references**: if we ever add cross-references between the sync file and individual task files (e.g., a "task detail" note per Habitica task), use `generateMarkdownLink` to produce correct relative links. Currently unused — document the API.
-  + Future feature — documented for awareness. No code change needed.
+  - Future feature — documented for awareness. No code change needed.
 - [x] **O11 — `Vault.create()` / `Vault.delete()` for file lifecycle**: we use `adapter.write` for first-sync file creation (when `TFile` doesn't exist yet). Obsidian's `Vault.create` is the canonical API — it creates the file, indexes it, and fires events. The adapter bypasses all of this. The current code has a TFile-first fallback that's architecturally sound; the comment at vault-handler.ts explains the trade-off. No immediate action needed — the existing pattern is defensible.
-  + `src/vault/vault-handler.ts:writeFile` — current pattern is defensible; documented.
+  - `src/vault/vault-handler.ts:writeFile` — current pattern is defensible; documented.
 
 ---
 
@@ -326,16 +326,16 @@ Cross-referenced against the [Obsidian plugin guidelines](https://docs.obsidian.
 The current `eslint.config.mjs` ships three rule overrides that the codebase already complies with. They should be re-enabled as guardrails.
 
 - [x] **Re-enable `no-restricted-globals`**: Code already uses `requestUrl` (O1 completed in v1.8.0). Zero `fetch()` calls exist in `src/`. The config comment claiming "fetch is intentional" is factually wrong — the method is named `rateLimitedFetch` but calls `requestUrl` internally. Fix the comment and remove the override.
-  + `eslint.config.mjs:59–60` — remove `'no-restricted-globals': 'off'` and its misleading comment.
+  - `eslint.config.mjs:59–60` — remove `'no-restricted-globals': 'off'` and its misleading comment.
 - [x] **Re-enable `eslint-comments/no-restricted-disable`**: Zero `eslint-disable` comments exist anywhere in `src/`. The recommended config blocks these to prevent rules from being silenced without review. Re-enable.
-  + `eslint.config.mjs:62` — remove `'eslint-comments/no-restricted-disable': 'off'`.
+  - `eslint.config.mjs:62` — remove `'eslint-comments/no-restricted-disable': 'off'`.
 - [x] **Re-enable `obsidianmd/sample-names`**: Zero sample names (`MyPlugin`, `SampleSettingTab`) exist in the codebase. The October checklist explicitly requires placeholder removal. Re-enable to prevent regressions.
-  + `eslint.config.mjs:65` — remove `'obsidianmd/sample-names': 'off'`.
+  - `eslint.config.mjs:65` — remove `'obsidianmd/sample-names': 'off'`.
 - [x] **Run `npm run lint` after changes** — verified 0 errors, 0 warnings (2026-08-04).
 - [x] **Relocate misplaced type declarations to `types.ts`** (2026-08-04 audit): `IPluginSettingsHost` moved from `settings.ts`, `InlineFields` moved from `markdown/inline-fields.ts`. Both are pure types with zero Obsidian imports — the `types.ts` file is the single source of truth for shared interfaces (now 13 interfaces/types). `DeclarativeControlDef`/`DeclarativeSettingEntry` remain local to `settings.ts` (non-exported; `DeclarativeSettingEntry` references `Setting` from `'obsidian'`). Full audit confirmed no other misplaced exported types. `npm run lint`: 0 errors, 0 warnings.
-  + `src/types.ts` — added `IPluginSettingsHost`, `InlineFields`
-  + `src/settings.ts` — removed `IPluginSettingsHost`, imports from `./types`
-  + `src/markdown/inline-fields.ts` — removed `InlineFields`, imports from `../types`
+  - `src/types.ts` — added `IPluginSettingsHost`, `InlineFields`
+  - `src/settings.ts` — removed `IPluginSettingsHost`, imports from `./types`
+  - `src/markdown/inline-fields.ts` — removed `InlineFields`, imports from `../types`
 
 ### 🟡 Pre-Launch: Manifest description cleanup
 
@@ -353,7 +353,7 @@ The plugin uses `sql.js` (SQLite WASM, ~1.5MB) persisted via `Vault.adapter.writ
 `npm run lint` reports 1 warning in `src/settings.ts`. The data-driven `SETTING_DEFS` render loop is architecturally clean but diverges from the canonical pattern.
 
 - [x] **Add `getSettingDefinitions()` with dual-support (Path B)**: implemented declarative API alongside existing `display()`. `SecretComponent` handled via `render` callback (not natively supported as a declarative control type). `outputFolder` upgraded to native `folder` control. Local `DeclarativeControlDef`/`DeclarativeSettingEntry` types until `minAppVersion` ≥ 1.13.0. `_renderApiTokenControl()` extracted as private method — shared between both paths (DRY). Verified 0 errors, 0 warnings via `npm run lint` (2026-08-04).
-  + `src/settings.ts:getSettingDefinitions()`, `_renderApiTokenControl()`
+  - `src/settings.ts:getSettingDefinitions()`, `_renderApiTokenControl()`
 
 ### ⚪ Pre-Launch: Beta testing (deferred)
 

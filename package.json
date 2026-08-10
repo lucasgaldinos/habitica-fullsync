@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production",
-    "lint": "eslint src/",
-    "lint:fix": "eslint src/ --fix",
+    "lint": "eslint src/ tests/ *.mjs",
+    "lint:fix": "eslint src/ tests/ *.mjs --fix",
     "test": "vitest"
   },
   "keywords": [],
@@ -15,18 +15,21 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.19.43",
-    "@types/sql.js": "^1.4.11",
     "@typescript-eslint/parser": "^8.65.0",
     "@vitest/coverage-v8": "^4.1.10",
     "builtin-modules": "^3.3.0",
     "esbuild": "^0.28.1",
     "eslint-plugin-obsidianmd": "^0.4.1",
+    "globals": "^17.9.0",
     "obsidian": "latest",
     "tslib": "2.4.0",
     "typescript": "^5.4.5",
     "vitest": "^4.1.10"
   },
-  "dependencies": {
-    "sql.js": "^1.14.1"
+  "packageManager": "pnpm@9.0.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

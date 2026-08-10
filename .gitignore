@@ -16,21 +16,23 @@ npm-debug.log*
 .env.*
 !.env.example
 .markdownlint.json
-.github/copilot-instructions.md
-*.sh
+state_*.json
 
 # Obsidian-specific
 data.json
 .obsidian/
 hot-reload.json
 .rtk/
+states/
 
 # IDE and OS files
 .vscode/
 .idea/
 *.swp
 .DS_Store
-.github/*
+.github/
 docs/implementation-references/*
 docs/plan/
 scripts/
+.agents/
+.specify/
